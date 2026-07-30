@@ -1,0 +1,13 @@
+{
+  "name": "cdl-mail-lecteur",
+  "version": "1.0.0",
+  "description": "CDL - Lecture et classement de la boite mail OVH (lecture seule, rien n'est jamais supprime)",
+  "main": "lecture-mails.js",
+  "scripts": { "start": "node lecture-mails.js" },
+  "dependencies": {
+    "imapflow": "^1.0.164",
+    "mailparser": "^3.7.1",
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5"
+  }
+}
