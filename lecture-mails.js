@@ -1,145 +1,287 @@
 /* ============================================================
-   CDL — Lecteur de boîte mail OVH (v1 · LECTURE SEULE)
+   CDL — Lecteur de boîte mail OVH (v1.1 · LECTURE SEULE)
    ------------------------------------------------------------
-   • Se connecte en IMAP à contact@domainedelacourdeslys.com
-   • Lit UNIQUEMENT les nouveaux messages (jamais de suppression,
-     jamais de modification, pas même le marquage "lu")
-   • Classe chaque mail (règles simples + IA Claude si clé fournie)
-   • Écrit le résultat dans Supabase (tables mails / mails_etat)
+   CORRECTIF v1.1 — dépassement mémoire (512 Mo) sur Render :
+     • on ne télécharge PLUS le message entier ;
+       seuls l'en-tête (expéditeur, objet, date) et un extrait
+       de texte limité à 60 Ko sont récupérés ;
+     • les PIÈCES JOINTES ne sont jamais téléchargées ;
+     • les mails sont traités UN PAR UN et enregistrés au fil
+       de l'eau (plus rien n'est accumulé en mémoire) ;
+     • au maximum 25 mails par cycle ;
+     • un seul cycle à la fois (plus de chevauchement).
+
+   GARANTIE INCHANGÉE : la boîte est ouverte en LECTURE SEULE.
+   Le programme est techniquement incapable de supprimer,
+   déplacer, ou même marquer un mail comme lu.
    ============================================================ */
 require("dotenv").config();
 const { ImapFlow } = require("imapflow");
-const { simpleParser } = require("mailparser");
 const { createClient } = require("@supabase/supabase-js");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-const FREQ = Math.max(2, parseInt(process.env.FREQUENCE_MINUTES || "3", 10)) * 60 * 1000;
 
-/* ---------- Classement par règles simples (toujours actif) ---------- */
-function classerParRegles(mail) {
+const FREQ = Math.max(2, parseInt(process.env.FREQUENCE_MINUTES || "3", 10)) * 60 * 1000;
+const MAX_PAR_CYCLE = 25;      // nb de mails traités par passage
+const MAX_OCTETS_TEXTE = 60000; // taille max du corps téléchargé
+const MAX_EXTRAIT = 2000;       // taille de l'extrait stocké
+const PREMIER_LOT = 30;         // au tout premier démarrage, on remonte 30 mails
+
+/* ------------------------------------------------------------
+   1. CLASSEMENT PAR RÈGLES (aucune IA, aucun coût, peu de RAM)
+   ------------------------------------------------------------ */
+function classer(mail) {
   const objet = (mail.objet || "").toLowerCase();
   const corps = (mail.extrait || "").toLowerCase();
   const exp = (mail.expediteur_email || "").toLowerCase();
   const texte = objet + " " + corps;
 
-  if (/facture|avis de pr[ée]l[èe]vement|[ée]ch[ée]ance|relev[ée]/.test(texte) &&
-      /(traiteur|orange|engie|edf|ovh|assurance|thelem|groupama|loison|grandsire|sp-traiteur)/.test(exp + " " + texte))
-    return { categorie: "compta", dossier: "Compta", analyse_cdl: "Facture ou avis fournisseur détecté → Comptabilité › À valider" };
+  if (
+    /facture|avis de pr[ée]l[èe]vement|[ée]ch[ée]ance|relev[ée]|devis fournisseur/.test(texte) ||
+    /(traiteur|orange|engie|edf|ovh|assurance|thelem|groupama|loison|grandsire|sp-traiteur|urssaf|cegestion)/.test(exp)
+  ) {
+    return {
+      categorie: "compta",
+      dossier: "Compta",
+      analyse: "Facture ou avis fournisseur détecté → Comptabilité · À valider",
+    };
+  }
 
-  if (/rooming|liste (des )?invit[ée]s|plan de table|fiche mobilier|d[ée]roul[ée]/.test(texte))
-    return { categorie: "client", dossier: null, analyse_cdl: "Document d'organisation client détecté (rooming/invités/plan)" };
+  if (/rooming|liste (des )?invit[ée]s|plan de table|fiche mobilier|d[ée]roul[ée]|canap[ée]|h[ée]bergement/.test(texte)) {
+    return {
+      categorie: "client",
+      dossier: null,
+      analyse: "Document d'organisation client (rooming / invités / plan / hébergement)",
+    };
+  }
 
-  if (/demande|disponibilit[ée]|mariage.*(2027|2028|2029)|visite|brochure|tarif/.test(texte))
-    return { categorie: "prospect", dossier: "Prospects", analyse_cdl: "Demande entrante ou question tarifaire → pipeline prospects" };
+  if (/demande de (dispo|renseignement)|disponibilit[ée]|visite|tarif|mariage.{0,30}(20\d\d)|mariages\.net|zankyou|devis/.test(texte)) {
+    return {
+      categorie: "prospect",
+      dossier: "Prospects",
+      analyse: "Demande entrante : disponibilités, tarifs ou visite → Prospects",
+    };
+  }
 
-  if (/mariages\.net|zankyou|bridebook/.test(exp))
-    return { categorie: "prospect", dossier: "Prospects", analyse_cdl: "Lead entrant via portail mariage" };
+  if (/newsletter|d[ée]sinscri|se d[ée]sabonner|no-?reply|promotion/.test(texte + " " + exp)) {
+    return { categorie: "info", dossier: null, analyse: "Message d'information / newsletter" };
+  }
 
-  return { categorie: "a_classer", dossier: null, analyse_cdl: "À classer manuellement (aucune règle ne correspond)" };
+  return { categorie: "a_classer", dossier: null, analyse: "Non reconnu automatiquement — à classer à la main" };
 }
 
-/* ---------- Classement IA (optionnel, si ANTHROPIC_API_KEY) ---------- */
-async function classerParIA(mail) {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
-  try {
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 300,
-        messages: [{
-          role: "user",
-          content: `Tu classes les mails du Domaine de la Cour des Lys (lieu de mariages et séminaires en Normandie).
-Catégories possibles : client (couple ayant signé), prospect (demande/visite avant signature), compta (facture ou fournisseur), prestataire (traiteur/DJ/photographe partenaire), autre.
-Réponds UNIQUEMENT en JSON : {"categorie":"...","dossier":"NomDuCouple ou Compta ou Prospects ou null","analyse_cdl":"une phrase expliquant le classement et l'action utile"}
+/* ------------------------------------------------------------
+   2. OUTILS
+   ------------------------------------------------------------ */
 
-Expéditeur : ${mail.expediteur} <${mail.expediteur_email}>
-Objet : ${mail.objet}
-Extrait : ${(mail.extrait || "").slice(0, 800)}
-Pièces jointes : ${mail.pieces_jointes.map(p => p.nom).join(", ") || "aucune"}`,
-        }],
-      }),
-    });
-    const data = await r.json();
-    const texte = (data.content || []).map(c => c.text || "").join("").replace(/```json|```/g, "").trim();
-    const j = JSON.parse(texte);
-    if (j && j.categorie) return j;
-  } catch (e) {
-    console.log("  IA indisponible, classement par règles conservé (", e.message, ")");
+// Repère la première partie texte du message SANS rien télécharger.
+// On ignore délibérément tout ce qui est pièce jointe (image, PDF…).
+function trouverPartieTexte(node) {
+  if (!node) return null;
+  const type = (node.type || "").toLowerCase();
+  const disposition = (node.disposition || "").toLowerCase();
+
+  if (disposition === "attachment") return null; // jamais de pièce jointe
+
+  if (type === "text/plain" && node.part) return { part: node.part, html: false };
+  if (type === "text/html" && node.part) return { part: node.part, html: true };
+
+  if (Array.isArray(node.childNodes)) {
+    // priorité au texte brut, plus léger et plus propre
+    for (const enfant of node.childNodes) {
+      const t = trouverPartieTexte(enfant);
+      if (t && !t.html) return t;
+    }
+    for (const enfant of node.childNodes) {
+      const t = trouverPartieTexte(enfant);
+      if (t) return t;
+    }
   }
   return null;
 }
 
-/* ---------- Un cycle de lecture ---------- */
-async function verifier() {
+// Lit un flux en s'arrêtant net au plafond : la mémoire ne peut pas déraper.
+async function lireFluxLimite(flux, maxOctets) {
+  let texte = "";
+  for await (const morceau of flux) {
+    texte += morceau.toString("utf8");
+    if (texte.length >= maxOctets) {
+      if (typeof flux.destroy === "function") flux.destroy();
+      break;
+    }
+  }
+  return texte.slice(0, maxOctets);
+}
+
+function nettoyer(texte, estHtml) {
+  let t = texte || "";
+  if (estHtml) {
+    t = t
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">");
+  }
+  return t.replace(/\s+/g, " ").trim().slice(0, MAX_EXTRAIT);
+}
+
+/* ------------------------------------------------------------
+   3. SUPABASE
+   ------------------------------------------------------------ */
+async function lireDernierUid() {
+  const { data, error } = await supabase
+    .from("mails_etat")
+    .select("dernier_uid")
+    .eq("id", 1)
+    .maybeSingle();
+  if (error) {
+    console.error("Lecture mails_etat impossible :", error.message);
+    return null;
+  }
+  return data ? Number(data.dernier_uid || 0) : 0;
+}
+
+async function ecrireDernierUid(uid) {
+  const { error } = await supabase
+    .from("mails_etat")
+    .upsert({ id: 1, dernier_uid: uid, derniere_verif: new Date().toISOString() });
+  if (error) console.error("Écriture mails_etat impossible :", error.message);
+}
+
+// Insertion tolérante : si une colonne n'existe pas dans la table,
+// on la retire et on réessaie, au lieu de tout perdre.
+async function insererMail(ligne) {
+  let candidat = { ...ligne };
+  for (let essai = 0; essai < 6; essai++) {
+    const { error } = await supabase.from("mails").insert(candidat);
+    if (!error) return true;
+
+    const colonne = (error.message || "").match(/'([a-z_]+)' column/i);
+    if (colonne && colonne[1] && colonne[1] in candidat) {
+      console.warn(`Colonne « ${colonne[1] } » absente de la table : ignorée.`);
+      delete candidat[colonne[1]];
+      continue;
+    }
+    if ((error.code || "") === "23505") return true; // doublon : déjà enregistré
+    console.error("Insertion refusée :", error.message);
+    return false;
+  }
+  return false;
+}
+
+/* ------------------------------------------------------------
+   4. CYCLE DE RELÈVE
+   ------------------------------------------------------------ */
+async function cycle() {
   const client = new ImapFlow({
     host: process.env.IMAP_HOST,
     port: parseInt(process.env.IMAP_PORT || "993", 10),
     secure: true,
-    auth: { user: process.env.MAIL_UTILISATEUR, pass: process.env.MAIL_MOT_DE_PASSE },
+    auth: {
+      user: process.env.MAIL_UTILISATEUR,
+      pass: (process.env.MAIL_MOT_DE_PASSE || "").trim(), // espace parasite neutralisé
+    },
     logger: false,
   });
 
-  const { data: etat } = await supabase.from("mails_etat").select("dernier_uid").eq("id", 1).single();
-  const dernierUid = (etat && etat.dernier_uid) || 0;
-
-  await client.connect();
-  // LECTURE SEULE : la boîte est ouverte en mode readOnly, rien ne peut être modifié
-  const boite = await client.getMailboxLock("INBOX", { readOnly: true });
-  let maxUid = dernierUid;
-  let nouveaux = 0;
-
+  let lock = null;
   try {
-    for await (const msg of client.fetch({ uid: `${dernierUid + 1}:*` }, { uid: true, source: true }, { uid: true })) {
-      if (msg.uid <= dernierUid) continue; // sécurité
-      const parse = await simpleParser(msg.source);
-      const mail = {
-        uid_imap: msg.uid,
-        date_reception: parse.date ? parse.date.toISOString() : new Date().toISOString(),
-        expediteur: (parse.from && parse.from.value[0] && parse.from.value[0].name) || "",
-        expediteur_email: (parse.from && parse.from.value[0] && parse.from.value[0].address) || "",
-        objet: parse.subject || "(sans objet)",
-        extrait: (parse.text || "").slice(0, 1500),
-        corps: (parse.text || "").slice(0, 20000),
-        pieces_jointes: (parse.attachments || []).map(a => ({ nom: a.filename, taille: a.size, type: a.contentType })),
-      };
+    await client.connect();
+    lock = await client.getMailboxLock("INBOX", { readOnly: true }); // LECTURE SEULE
 
-      let classement = classerParRegles(mail);
-      const ia = await classerParIA(mail);
-      if (ia) classement = ia;
+    const uidNext = client.mailbox.uidNext || 1;
+    let dernier = await lireDernierUid();
 
-      const { error } = await supabase.from("mails").upsert(
-        { ...mail, ...classement },
-        { onConflict: "uid_imap" }
-      );
-      if (error) console.log("  ⚠ Supabase :", error.message);
-      else {
-        nouveaux++;
-        console.log(`  ✉ [${classement.categorie}] ${mail.expediteur_email} — ${mail.objet}`);
-      }
-      if (msg.uid > maxUid) maxUid = msg.uid;
+    if (dernier === null) return; // Supabase injoignable, on retentera
+    if (!dernier) {
+      dernier = Math.max(0, uidNext - PREMIER_LOT - 1);
+      console.log(`Premier démarrage : reprise des ~${PREMIER_LOT} derniers mails.`);
     }
-  } finally {
-    boite.release();
-    await client.logout();
-  }
 
-  await supabase.from("mails_etat").upsert({ id: 1, dernier_uid: maxUid, derniere_verif: new Date().toISOString() });
-  console.log(`${new Date().toLocaleTimeString("fr-FR")} — ${nouveaux} nouveau(x) mail(s) classé(s). Prochaine vérification dans ${FREQ / 60000} min.`);
+    if (uidNext - 1 <= dernier) {
+      console.log("Aucun nouveau mail.");
+      return;
+    }
+
+    let traites = 0;
+    let plusHautUid = dernier;
+
+    for await (const msg of client.fetch(
+      `${dernier + 1}:*`,
+      { uid: true, envelope: true, bodyStructure: true, internalDate: true },
+      { uid: true }
+    )) {
+      if (msg.uid <= dernier) continue;      // quirk IMAP : le dernier message revient toujours
+      if (traites >= MAX_PAR_CYCLE) break;   // on plafonne, la suite au prochain cycle
+
+      const env = msg.envelope || {};
+      const de = (env.from && env.from[0]) || {};
+
+      // --- extrait de texte, plafonné, sans pièce jointe ---
+      let extrait = "";
+      try {
+        const partie = trouverPartieTexte(msg.bodyStructure);
+        if (partie) {
+          const { content } = await client.download(msg.uid, partie.part, {
+            uid: true,
+            maxBytes: MAX_OCTETS_TEXTE,
+          });
+          extrait = nettoyer(await lireFluxLimite(content, MAX_OCTETS_TEXTE), partie.html);
+        }
+      } catch (e) {
+        console.warn(`UID ${msg.uid} : corps illisible (${e.message}) — en-tête conservé.`);
+      }
+
+      const base = {
+        uid_imap: msg.uid,
+        date_reception: (env.date || msg.internalDate || new Date()).toISOString(),
+        expediteur_nom: de.name || null,
+        expediteur_email: de.address || null,
+        objet: env.subject || "(sans objet)",
+        extrait,
+      };
+      const verdict = classer(base);
+
+      const ok = await insererMail({ ...base, ...verdict });
+      if (ok) {
+        traites++;
+        plusHautUid = Math.max(plusHautUid, msg.uid);
+        await ecrireDernierUid(plusHautUid); // reprise exacte même si on plante
+        console.log(`✓ ${verdict.categorie.padEnd(10)} | ${base.expediteur_email || "?"} | ${base.objet.slice(0, 60)}`);
+      }
+    }
+
+    const mo = Math.round(process.memoryUsage().rss / 1048576);
+    console.log(`Cycle terminé : ${traites} mail(s) traité(s) · mémoire ${mo} Mo`);
+  } catch (e) {
+    console.error("Erreur du cycle :", e.message);
+  } finally {
+    if (lock) lock.release();
+    try {
+      await client.logout();
+    } catch (_) {
+      /* connexion déjà fermée */
+    }
+  }
 }
 
-/* ---------- Boucle ---------- */
-(async function boucle() {
-  console.log("CDL — Lecteur de boîte mail (LECTURE SEULE) démarré.");
-  console.log("Boîte :", process.env.MAIL_UTILISATEUR, "· Serveur :", process.env.IMAP_HOST);
-  for (;;) {
-    try { await verifier(); }
-    catch (e) { console.log("⚠ Erreur cycle :", e.message, "— nouvel essai au prochain cycle."); }
-    await new Promise(r => setTimeout(r, FREQ));
-  }
-})();
+/* ------------------------------------------------------------
+   5. BOUCLE — un cycle à la fois, jamais en parallèle
+   ------------------------------------------------------------ */
+async function boucle() {
+  await cycle();
+  if (global.gc) global.gc();
+  setTimeout(boucle, FREQ);
+}
+
+process.on("unhandledRejection", (e) => console.error("Rejet non géré :", e && e.message));
+process.on("uncaughtException", (e) => console.error("Exception non gérée :", e && e.message));
+
+console.log("CDL — Lecteur de boîte mail (LECTURE SEULE) v1.1 démarré");
+console.log(`Serveur ${process.env.IMAP_HOST} · relève toutes les ${FREQ / 60000} min · max ${MAX_PAR_CYCLE} mails/cycle`);
+boucle();
