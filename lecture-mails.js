@@ -1,5 +1,5 @@
 /* ============================================================
-   CDL — Lecteur de boîte mail OVH (v1.2 · LECTURE SEULE)
+   CDL — Lecteur de boîte mail OVH (v1.3 · LECTURE SEULE)
    ------------------------------------------------------------
    CORRECTIF v1.1 — dépassement mémoire (512 Mo) sur Render :
      • on ne télécharge PLUS le message entier ;
@@ -29,42 +29,89 @@ const PREMIER_LOT = 30;         // au tout premier démarrage, on remonte 30 mai
 
 /* ------------------------------------------------------------
    1. CLASSEMENT PAR RÈGLES (aucune IA, aucun coût, peu de RAM)
+   Règles calibrées sur les vrais mails CDL du 31/07/2026.
    ------------------------------------------------------------ */
+
+// Boîtes grand public : l'adresse ne dit RIEN du rôle de l'expéditeur.
+// (c'est ce qui faisait passer vos clients en @orange.fr pour des factures)
+const BOITE_GRAND_PUBLIC = /@(orange|wanadoo|free|sfr|neuf|laposte|gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|icloud|me\.com|bbox|numericable|aol)\./;
+
+// Vrais domaines de vos fournisseurs / organismes
+const DOMAINE_FOURNISSEUR = /@([a-z0-9.-]*)(sp-traiteur|thelem|groupama|cegestion|ovh|engie|edf|urssaf|impots\.gouv|3douest|caenlamer|caen-la-mer|loison|grandsire|malakoff|ag2r|legalplace)\./;
+
 function classer(mail) {
   const objet = (mail.objet || "").toLowerCase();
   const corps = (mail.extrait || "").toLowerCase();
   const exp = (mail.expediteur_email || "").toLowerCase();
   const texte = objet + " " + corps;
 
-  if (
-    /facture|avis de pr[ée]l[èe]vement|[ée]ch[ée]ance|relev[ée]|devis fournisseur/.test(texte) ||
-    /(traiteur|orange|engie|edf|ovh|assurance|thelem|groupama|loison|grandsire|sp-traiteur|urssaf|cegestion)/.test(exp)
-  ) {
+  /* 1 — VOTRE PROPRE ADRESSE : copie d'un envoi, pas un mail entrant */
+  if (exp.includes("@domainedelacourdeslys.com")) {
+    return {
+      categorie: "interne",
+      dossier: null,
+      analyse: "Expédié depuis la boîte CDL — copie d'un envoi sortant",
+    };
+  }
+
+  /* 2 — COMPTABILITÉ : facture, taxe, cotisation, prélèvement */
+  const motCompta = /facture|avoir n|pr[ée]l[èe]vement|[ée]ch[ée]ance|relev[ée] de compte|taxe de s[ée]jour|cotisation|appel de fonds|d[ée]claration (fiscale|tva|urssaf)|bulletin de paie|note d'honoraires/.test(texte);
+  const estFournisseur = DOMAINE_FOURNISSEUR.test(exp) && !BOITE_GRAND_PUBLIC.test(exp);
+  if (motCompta || (estFournisseur && /paiement|montant|r[èe]glement|€|euros? ht/.test(texte))) {
     return {
       categorie: "compta",
       dossier: "Compta",
-      analyse: "Facture ou avis fournisseur détecté → Comptabilité · À valider",
+      analyse: "Pièce comptable ou taxe → Comptabilité · À valider",
     };
   }
 
-  if (/rooming|liste (des )?invit[ée]s|plan de table|fiche mobilier|d[ée]roul[ée]|canap[ée]|h[ée]bergement/.test(texte)) {
+  /* 3 — DÉMARCHAGE : on vous vend quelque chose (avant client/prospect,
+        car ces mails parlent aussi de « mariage », « tarif », « événement ») */
+  if (
+    /mettre en images|votre visibilit[ée]|r[ée]f[ée]rencement|boostez|augmentez vos r[ée]servations|d[ée]couvrez notre (offre|solution)|notre agence|proposition de partenariat|nous accompagnons les (domaines|lieux)|essai gratuit|webinaire/.test(texte) ||
+    /\b(unsubscribe|our (team|love|offer)|we would like|best regards|click here|free trial)\b/.test(texte)
+  ) {
+    return {
+      categorie: "demarchage",
+      dossier: null,
+      analyse: "Sollicitation commerciale entrante — sans suite a priori",
+    };
+  }
+
+  /* 4 — CLIENT : dossier déjà signé, on organise l'événement */
+  if (
+    /\bj\s*-\s*\d+\s*(mois|jours|semaines)\b/.test(texte) ||
+    /rooming|plan de (table|salle)|liste (des )?invit[ée]s|fiche mobilier|d[ée]roul[ée]|h[ée]bergement|canap[ée]s?-?lits?|r[ée]partition des chambres|votre (mariage|[ée]v[ée]nement) au domaine/.test(texte)
+  ) {
     return {
       categorie: "client",
       dossier: null,
-      analyse: "Document d'organisation client (rooming / invités / plan / hébergement)",
+      analyse: "Dossier en cours d'organisation → Client",
     };
   }
 
-  if (/demande de (dispo|renseignement)|disponibilit[ée]|visite|tarif|mariage.{0,30}(20\d\d)|mariages\.net|zankyou|devis/.test(texte)) {
+  /* 5 — PROSPECT : demande entrante, pas encore signée */
+  if (
+    /mariages\.net|zankyou|lab-event|formulaire de demande/.test(exp + " " + texte) ||
+    /demande de (renseignements?|d[ée]vis|visite|dispo)|demande d'information|disponibilit[ée]s?|confirmation de votre visite|visite du domaine|vos tarifs|grille tarifaire|pose(r)? une option|confirmation d'option/.test(texte)
+  ) {
     return {
       categorie: "prospect",
       dossier: "Prospects",
-      analyse: "Demande entrante : disponibilités, tarifs ou visite → Prospects",
+      analyse: "Demande entrante (renseignements, visite, option) → Prospects",
     };
   }
 
-  if (/newsletter|d[ée]sinscri|se d[ée]sabonner|no-?reply|promotion/.test(texte + " " + exp)) {
-    return { categorie: "info", dossier: null, analyse: "Message d'information / newsletter" };
+  /* 6 — INFO / TECHNIQUE : notifications automatiques */
+  if (
+    /^(no-?reply|ne-?pas-?repondre|notifications?|alerte?s?)@/.test(exp) ||
+    /code de v[ée]rification|password reset|r[ée]initialisation.{0,20}mot de passe|confirmation d'inscription|memory limit|deploy/.test(texte)
+  ) {
+    return {
+      categorie: "info",
+      dossier: null,
+      analyse: "Notification automatique — aucune action attendue",
+    };
   }
 
   return { categorie: "a_classer", dossier: null, analyse: "Non reconnu automatiquement — à classer à la main" };
@@ -177,7 +224,26 @@ async function insererMail(ligne) {
 /* ------------------------------------------------------------
    4. CYCLE DE RELÈVE
    ------------------------------------------------------------ */
+
+/* Option de RELECTURE (variable RELIRE = oui dans Render).
+   Efface les mails déjà rangés dans la table CDL et les reclasse
+   avec les nouvelles règles. N'a AUCUN effet sur la boîte OVH,
+   qui reste en lecture seule. À retirer après le test. */
+let relectureFaite = false;
+async function relectureEventuelle() {
+  if (relectureFaite) return;
+  relectureFaite = true;
+  if ((process.env.RELIRE || "").toLowerCase() !== "oui") return;
+
+  console.log("RELIRE=oui → remise à zéro de la table CDL pour reclasser les mails.");
+  const { error } = await supabase.from("mails").delete().gte("id", 0);
+  if (error) console.error("Vidage de la table impossible :", error.message);
+  await ecrireDernierUid(0);
+}
+
 async function cycle() {
+  await relectureEventuelle();
+
   const client = new ImapFlow({
     host: process.env.IMAP_HOST,
     port: parseInt(process.env.IMAP_PORT || "993", 10),
@@ -295,6 +361,6 @@ async function boucle() {
 process.on("unhandledRejection", (e) => console.error("Rejet non géré :", e && e.message));
 process.on("uncaughtException", (e) => console.error("Exception non gérée :", e && e.message));
 
-console.log("CDL — Lecteur de boîte mail (LECTURE SEULE) v1.2 démarré");
+console.log("CDL — Lecteur de boîte mail (LECTURE SEULE) v1.3 démarré");
 console.log(`Serveur ${process.env.IMAP_HOST} · relève toutes les ${FREQ / 60000} min · max ${MAX_PAR_CYCLE} mails/cycle`);
 boucle();
