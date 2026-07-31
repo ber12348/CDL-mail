@@ -1,5 +1,5 @@
 /* ============================================================
-   CDL — Lecteur de boîte mail OVH (v1.1 · LECTURE SEULE)
+   CDL — Lecteur de boîte mail OVH (v1.2 · LECTURE SEULE)
    ------------------------------------------------------------
    CORRECTIF v1.1 — dépassement mémoire (512 Mo) sur Render :
      • on ne télécharge PLUS le message entier ;
@@ -211,27 +211,41 @@ async function cycle() {
     let traites = 0;
     let plusHautUid = dernier;
 
+    /* ÉTAPE 1 — on collecte UNIQUEMENT les en-têtes.
+       Aucune autre commande IMAP n'est permise pendant cette boucle :
+       tout téléchargement ici bloquerait la connexion. */
+    const aTraiter = [];
     for await (const msg of client.fetch(
       `${dernier + 1}:*`,
       { uid: true, envelope: true, bodyStructure: true, internalDate: true },
       { uid: true }
     )) {
-      if (msg.uid <= dernier) continue;      // quirk IMAP : le dernier message revient toujours
-      if (traites >= MAX_PAR_CYCLE) break;   // on plafonne, la suite au prochain cycle
+      if (msg.uid <= dernier) continue;        // quirk IMAP : le dernier message revient toujours
+      if (aTraiter.length >= MAX_PAR_CYCLE) break;
+      aTraiter.push({
+        uid: msg.uid,
+        envelope: msg.envelope || {},
+        internalDate: msg.internalDate,
+        partie: trouverPartieTexte(msg.bodyStructure), // repérage seul, rien n'est téléchargé
+      });
+    }
+    console.log(`${aTraiter.length} mail(s) à traiter.`);
 
-      const env = msg.envelope || {};
+    /* ÉTAPE 2 — la liste est close, la connexion est libre :
+       on peut maintenant télécharger les textes un par un. */
+    for (const msg of aTraiter) {
+      const env = msg.envelope;
       const de = (env.from && env.from[0]) || {};
 
       // --- extrait de texte, plafonné, sans pièce jointe ---
       let extrait = "";
       try {
-        const partie = trouverPartieTexte(msg.bodyStructure);
-        if (partie) {
-          const { content } = await client.download(msg.uid, partie.part, {
+        if (msg.partie) {
+          const { content } = await client.download(msg.uid, msg.partie.part, {
             uid: true,
             maxBytes: MAX_OCTETS_TEXTE,
           });
-          extrait = nettoyer(await lireFluxLimite(content, MAX_OCTETS_TEXTE), partie.html);
+          extrait = nettoyer(await lireFluxLimite(content, MAX_OCTETS_TEXTE), msg.partie.html);
         }
       } catch (e) {
         console.warn(`UID ${msg.uid} : corps illisible (${e.message}) — en-tête conservé.`);
@@ -240,7 +254,6 @@ async function cycle() {
       const base = {
         uid_imap: msg.uid,
         date_reception: (env.date || msg.internalDate || new Date()).toISOString(),
-        expediteur_nom: de.name || null,
         expediteur_email: de.address || null,
         objet: env.subject || "(sans objet)",
         extrait,
@@ -282,6 +295,6 @@ async function boucle() {
 process.on("unhandledRejection", (e) => console.error("Rejet non géré :", e && e.message));
 process.on("uncaughtException", (e) => console.error("Exception non gérée :", e && e.message));
 
-console.log("CDL — Lecteur de boîte mail (LECTURE SEULE) v1.1 démarré");
+console.log("CDL — Lecteur de boîte mail (LECTURE SEULE) v1.2 démarré");
 console.log(`Serveur ${process.env.IMAP_HOST} · relève toutes les ${FREQ / 60000} min · max ${MAX_PAR_CYCLE} mails/cycle`);
 boucle();
