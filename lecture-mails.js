@@ -1,11 +1,11 @@
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v2  ·  LECTURE SEULE
+   CDL — Lecteur de boite mail  ·  v2.1  ·  LECTURE SEULE
    ------------------------------------------------------------
-   Nouveautes v2 :
-     • nom de l'expediteur (et plus seulement son adresse)
-     • corps complet du mail (pour affichage + reponse dans CDL)
-     • liste des pieces jointes (nom, type, taille)
-     • nouvelle categorie "pub" pour la publicite pure
+   Apports v2 conserves :
+     • nom de l'expediteur  • corps complet  • pieces jointes
+   Correction v2.1 :
+     • vocabulaire d'origine retabli : demarchage / info
+     • colonne "dossier" a nouveau remplie (Compta, Prospects...)
    Ne supprime, ne deplace et ne modifie JAMAIS un mail.
    ============================================================ */
 const { ImapFlow } = require("imapflow");
@@ -22,40 +22,49 @@ function classer(mail) {
   const corps = (mail.extrait || "").toLowerCase();
   const tout = objet + " " + corps;
 
-  // 1. Publicite / newsletters commerciales
-  const PUB = ["sistrix", "dolcevita", "dolce-vita", "newsletter", "promo", "webinar",
-    "mjt.lu", "mailjet", "sendinblue", "brevo", "unsubscribe", "desinscri"];
-  if (PUB.some((m) => de.includes(m) || tout.includes(m))) {
-    return { categorie: "pub", analyse: "Publicite ou newsletter commerciale" };
+  // 1. Demarchage / newsletters commerciales
+  const DEMARCHAGE = ["sistrix", "dolcevita", "dolce-vita", "le-guide", "guinguette",
+    "newsletter", "webinar", "mjt.lu", "mailjet", "sendinblue", "brevo",
+    "unsubscribe", "desinscri", "votre visibilite", "referencement"];
+  if (DEMARCHAGE.some((m) => de.includes(m) || tout.includes(m))) {
+    return { categorie: "demarchage", dossier: null,
+      analyse: "Sollicitation commerciale externe — sans suite" };
   }
 
-  // 2. Interne : outils techniques du Domaine
-  const INTERNE = ["render.com", "neon.tech", "supabase", "github", "vercel", "cloudflare", "ovh"];
-  if (INTERNE.some((m) => de.includes(m))) {
-    return { categorie: "interne", analyse: "Notification d'un outil technique du Domaine" };
+  // 2. Info : notifications automatiques d'outils
+  const OUTILS = ["render.com", "neon.tech", "supabase", "github", "vercel",
+    "cloudflare", "ovh.com", "anthropic", "claude.ai", "lab-events", "notify@"];
+  if (OUTILS.some((m) => de.includes(m))) {
+    return { categorie: "info", dossier: null,
+      analyse: "Notification automatique — outil technique du Domaine" };
   }
 
   // 3. Compta
-  if (/factur|devis sign|avoir|relev|virement|taxe de sejour|urssaf|impot|tva|comptab|cegestion/.test(tout)) {
-    return { categorie: "compta", analyse: "Facture ou piece comptable detectee -> a rapprocher" };
+  if (/factur|avoir|relev|virement|taxe de sejour|urssaf|impot|tva|comptab|cegestion|declaration/.test(tout)) {
+    return { categorie: "compta", dossier: "Compta",
+      analyse: "Piece comptable ou taxe — a rapprocher de l'exercice en cours" };
   }
 
   // 4. Client : document d'organisation
-  if (/rooming|plan de table|deroul|liste des invit|traiteur|dj |photographe|etat des lieux|caution|assurance/.test(tout)) {
-    return { categorie: "client", analyse: "Document d'organisation client (rooming list, deroule...)" };
+  if (/rooming|plan de table|deroul|liste des invit|traiteur|photographe|etat des lieux|caution|assurance/.test(tout)) {
+    return { categorie: "client", dossier: "Clients",
+      analyse: "Document d'organisation client (rooming list, deroule...)" };
   }
 
   // 5. Client : suivi de dossier
-  if (/mariage|reservation|acompte|solde|contrat|votre week-end|votre sejour|j - \d|j-\d/.test(tout)) {
-    return { categorie: "client", analyse: "Suivi de dossier client" };
+  if (/mariage|reservation|acompte|solde|contrat|votre week-end|votre sejour|confirmation d'option|j - \d|j-\d/.test(tout)) {
+    return { categorie: "client", dossier: "Clients",
+      analyse: "Suivi de dossier client" };
   }
 
   // 6. Prospect : demande entrante
   if (/mariages\.net|demande d'information|demande d'info|disponibilit|tarif|visite|renseignement|formulaire de demande/.test(tout)) {
-    return { categorie: "prospect", analyse: "Demande entrante : disponibilites, tarifs, visite" };
+    return { categorie: "prospect", dossier: "Prospects",
+      analyse: "Demande entrante (renseignements, disponibilites, tarifs)" };
   }
 
-  return { categorie: "a_classer", analyse: "Non reconnu automatiquement — a classer manuellement" };
+  return { categorie: "a_classer", dossier: null,
+    analyse: "Non reconnu automatiquement — a classer manuellement" };
 }
 
 /* ---------- Un cycle de lecture ---------- */
@@ -72,7 +81,6 @@ async function cycle() {
   const boite = await client.getMailboxLock("INBOX", { readOnly: true });
 
   try {
-    // Reprise a partir du dernier UID traite
     const { data: etat } = await supabase
       .from("mails_etat").select("dernier_uid").eq("id", 1).single();
     const depuis = (etat && etat.dernier_uid) || 0;
@@ -111,8 +119,9 @@ async function cycle() {
         traite: false,
       };
 
-      const { categorie, analyse } = classer(mail);
+      const { categorie, dossier, analyse } = classer(mail);
       mail.categorie = categorie;
+      mail.dossier = dossier;
       mail.analyse = analyse;
       if (pieces.length) {
         mail.analyse += ` · ${pieces.length} piece(s) jointe(s) : ${pieces.map((p) => p.nom).join(", ")}`;
@@ -148,7 +157,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v2 (LECTURE SEULE) demarre.");
+  console.log("CDL — Lecteur de boite mail v2.1 (LECTURE SEULE) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s).`);
 
