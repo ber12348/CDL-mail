@@ -1,6 +1,9 @@
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v3.1  ·  LECTURE SEULE
+   CDL — Lecteur de boite mail  ·  v3.2  ·  LECTURE SEULE
    ------------------------------------------------------------
+   Correction v3.2 :
+     • les plateformes (Mariages.net, Lab Event) sont traitees
+       AVANT la regle technique : leurs demandes sont des leads
    Corrections v3.1 :
      • "avoir" retire de la regle compta (matchait savoir/pouvoir)
      • adresses generiques (info@mariages.net, notify@lab-event,
@@ -87,7 +90,28 @@ function classer(mail) {
       analyse: "Message emis par le Domaine — copie interne" };
   }
 
-  /* 1. TECHNIQUE : outils, notifications, codes — avant tout le reste */
+  /* 1. PLATEFORME d'apport d'affaires — traitee en premier :
+        ce sont des leads, pas des notifications techniques */
+  if (PLATEFORMES.some((p) => de.includes(p))) {
+    // les vraies newsletters commerciales des plateformes restent du demarchage
+    if (/newsletter|check-list|nouveaut|webinar|astuce|conseil du mois|business/.test(objet)) {
+      return { categorie: "demarchage", dossier: null,
+        analyse: "Communication commerciale de la plateforme — sans suite" };
+    }
+    const vraie = adresseDansCorps(mail.corps || mail.extrait);
+    const suite = vraie && ANNUAIRE.get(vraie);
+    if (suite) {
+      return { categorie: suite.statut === "client" ? "client" : "prospect",
+        dossier: libelle(suite),
+        analyse: `Via plateforme — dossier reconnu (${vraie})` };
+    }
+    return { categorie: "prospect", dossier: "Nouvelle demande",
+      analyse: vraie
+        ? `Nouvelle demande via plateforme — contact : ${vraie}`
+        : "Nouvelle demande via plateforme — a rattacher a un dossier" };
+  }
+
+  /* 2. TECHNIQUE : outils, notifications, codes — avant tout le reste */
   const OUTILS = ["render.com", "neon.tech", "supabase", "github", "vercel",
     "cloudflare", "ovh.com", "ovh.net", "anthropic", "claude.ai", "mammotion",
     "3douest", "apple.com", "google.com", "microsoft", "3cx", "search-console",
@@ -98,7 +122,7 @@ function classer(mail) {
       analyse: "Notification technique — aucune action commerciale" };
   }
 
-  /* 2. DEMARCHAGE : sollicitations commerciales — avant les regles metier */
+  /* 3. DEMARCHAGE : sollicitations commerciales — avant les regles metier */
   const DEMARCHAGE_DE = ["sistrix", "dolcevita", "dolce-vita", "le-guide",
     "guerveur", "guinguette", "athezza", "mjt.lu", "mailjet", "sendinblue",
     "brevo", "studio-jfg", "monatelier", "romantictourist", "qweeby"];
@@ -108,7 +132,7 @@ function classer(mail) {
       analyse: "Sollicitation commerciale externe — sans suite" };
   }
 
-  /* 3. COMPTA par expediteur : banques, tresor, organismes */
+  /* 4. COMPTA par expediteur : banques, tresor, organismes */
   const COMPTA_DE = ["payfip", "sips-services", "credit-agricole", "creditagricole",
     "ca-normandie", "banque", "urssaf", "impots.gouv", "dgfip", "amazon.fr",
     "amazon.com", "sage", "cegid", "pennylane", "qonto", "stripe", "anett"];
@@ -117,7 +141,7 @@ function classer(mail) {
       analyse: "Piece comptable (banque, tresor public ou fournisseur)" };
   }
 
-  /* 4. Expediteur connu : la reponse la plus fiable */
+  /* 5. Expediteur connu : la reponse la plus fiable */
   const connu = ANNUAIRE.get(de);
   if (connu) {
     if (connu.statut === "client") {
@@ -130,21 +154,6 @@ function classer(mail) {
     }
     return { categorie: "prospect", dossier: libelle(connu),
       analyse: "Ancien contact (dossier perdu) qui reecrit — piste a requalifier" };
-  }
-
-  /* 5. Plateforme : on cherche le couple derriere */
-  if (PLATEFORMES.some((p) => de.includes(p))) {
-    const vraie = adresseDansCorps(mail.corps || mail.extrait);
-    const suite = vraie && ANNUAIRE.get(vraie);
-    if (suite) {
-      return { categorie: suite.statut === "client" ? "client" : "prospect",
-        dossier: libelle(suite),
-        analyse: `Via plateforme — dossier reconnu (${vraie})` };
-    }
-    return { categorie: "prospect", dossier: "Nouvelle demande",
-      analyse: vraie
-        ? `Nouvelle demande via plateforme — contact : ${vraie}`
-        : "Nouvelle demande via plateforme — a rattacher a un dossier" };
   }
 
   /* 6. COMPTA par contenu — sans le mot "avoir" */
@@ -267,7 +276,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v3.1 (LECTURE SEULE) demarre.");
+  console.log("CDL — Lecteur de boite mail v3.2 (LECTURE SEULE) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s).`);
 
@@ -283,5 +292,3 @@ async function cycle() {
   await boucle();
   setInterval(boucle, FREQ);
 })();
-
-      
