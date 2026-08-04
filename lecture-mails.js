@@ -1,6 +1,13 @@
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v3.2  ·  LECTURE SEULE
+   CDL — Lecteur de boite mail  ·  v4  ·  LECTURE SEULE
    ------------------------------------------------------------
+   Nouveau en v4 :
+     • quand les regles ne reconnaissent rien, le mail est soumis
+       a Claude (Haiku) qui lit le message et propose un classement
+     • les regles restent prioritaires : l'IA n'est appelee que
+       sur les mails qui finiraient en "a classer" (peu d'appels)
+     • si la cle ANTHROPIC_API_KEY est absente, tout fonctionne
+       exactement comme en v3.2
    Correction v3.2 :
      • les plateformes (Mariages.net, Lab Event) sont traitees
        AVANT la regle technique : leurs demandes sont des leads
@@ -71,7 +78,83 @@ function adresseDansCorps(corps) {
   return null;
 }
 
-/* ---------- Classement ---------- */
+
+/* ---------- Classement par IA (dernier recours) ---------- */
+const CLE_IA = process.env.ANTHROPIC_API_KEY || "";
+const MODELE_IA = process.env.MODELE_IA || "claude-haiku-4-5-20251001";
+let compteurIA = 0;
+
+const CATEGORIES_VALIDES = ["client", "prospect", "compta", "technique", "demarchage", "a_classer"];
+
+async function classerParIA(mail) {
+  if (!CLE_IA) return null;
+
+  const consigne = `Tu classes les mails recus par le Domaine de la Cour des Lys, un lieu de reception en Normandie (mariages, seminaires, hebergement).
+
+Reponds UNIQUEMENT par un objet JSON, sans texte autour, sans balises markdown :
+{"categorie":"...","dossier":"...","analyse":"..."}
+
+categorie doit valoir exactement l'une de ces valeurs :
+- "prospect"   : quelqu'un se renseigne, demande un tarif, une visite, une disponibilite, envoie un formulaire de demande
+- "client"     : echange avec un couple ou une entreprise dont l'evenement est deja reserve (organisation, rooming list, plan de table, acompte, J-3 mois...)
+- "compta"     : facture, devis fournisseur, releve, prelevement, taxe, banque, expert-comptable, assurance
+- "technique"  : notification automatique d'un outil, code de verification, message vocal, avis Google, maintenance
+- "demarchage" : prospection commerciale entrante, newsletter, offre de service, referencement
+- "a_classer"  : impossible de trancher
+
+dossier : le nom du couple ou de la societe concernee si tu peux l'identifier dans le message, sinon null.
+analyse : une phrase courte en francais expliquant ta decision, sans accent obligatoire.`;
+
+  const message = `Expediteur : ${mail.expediteur || "(inconnu)"} <${mail.expediteur_email || "?"}>
+Objet : ${mail.objet || "(sans objet)"}
+
+Message :
+${(mail.corps || mail.extrait || "(vide)").slice(0, 2000)}`;
+
+  try {
+    const reponse = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": CLE_IA,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: MODELE_IA,
+        max_tokens: 300,
+        system: consigne,
+        messages: [{ role: "user", content: message }],
+      }),
+    });
+
+    if (!reponse.ok) {
+      console.log(`  ! IA indisponible (${reponse.status}) — classement par regles conserve.`);
+      return null;
+    }
+
+    const data = await reponse.json();
+    const texte = (data.content || [])
+      .map((b) => (b.type === "text" ? b.text : ""))
+      .join("")
+      .replace(/```json|```/g, "")
+      .trim();
+
+    const avis = JSON.parse(texte);
+    if (!CATEGORIES_VALIDES.includes(avis.categorie)) return null;
+
+    compteurIA++;
+    return {
+      categorie: avis.categorie,
+      dossier: avis.dossier || (avis.categorie === "compta" ? "Compta" : null),
+      analyse: `${avis.analyse || "Classe par lecture du message"} (IA)`,
+    };
+  } catch (e) {
+    console.log("  ! IA : ", e.message, "— classement par regles conserve.");
+    return null;
+  }
+}
+
+/* ---------- Classement par regles ---------- */
 function classer(mail) {
   const de = (mail.expediteur_email || "").toLowerCase();
   const nomDe = (mail.expediteur || "").toLowerCase();
@@ -238,7 +321,14 @@ async function cycle() {
         traite: false,
       };
 
-      const { categorie, dossier, analyse } = classer(mail);
+      let { categorie, dossier, analyse } = classer(mail);
+
+      // les regles n'ont rien reconnu : on demande son avis a l'IA
+      if (categorie === "a_classer") {
+        const avis = await classerParIA(mail);
+        if (avis) ({ categorie, dossier, analyse } = avis);
+      }
+
       mail.categorie = categorie;
       mail.dossier = dossier;
       mail.analyse = analyse;
@@ -266,8 +356,9 @@ async function cycle() {
     });
 
     console.log(nouveaux
-      ? `Cycle termine : ${nouveaux} nouveau(x) mail(s), dernier UID ${dernierUid}.`
+      ? `Cycle termine : ${nouveaux} nouveau(x) mail(s), dernier UID ${dernierUid}${compteurIA ? `, dont ${compteurIA} classe(s) par l'IA` : ""}.`
       : `Cycle termine : rien de nouveau (dernier UID ${dernierUid}).`);
+    compteurIA = 0;
   } finally {
     boite.release();
     await client.logout();
@@ -276,9 +367,12 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v3.2 (LECTURE SEULE) demarre.");
+  console.log("CDL — Lecteur de boite mail v4 (LECTURE SEULE) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s).`);
+  console.log(CLE_IA
+    ? `Classement par IA actif (${MODELE_IA}) en secours des regles.`
+    : "Classement par regles seules (pas de cle ANTHROPIC_API_KEY).");
 
   const boucle = async () => {
     try {
