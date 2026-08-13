@@ -1,6 +1,18 @@
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v4  ·  LECTURE SEULE
+   CDL — Lecteur de boite mail  ·  v5  ·  LECTURE SEULE (IMAP)
    ------------------------------------------------------------
+   Nouveau en v5 :
+     • repond aux mails depuis CDL : surveille la table "reponses"
+       (Supabase). Quand l'equipe demande un brouillon, Claude le
+       redige ; quand l'equipe valide, l'envoi part par SMTP OVH.
+       RIEN ne part sans validation humaine dans l'interface.
+     • la boite reste en LECTURE SEULE cote IMAP : l'envoi passe
+       par SMTP, un canal separe qui ne touche pas aux mails recus.
+     • le Message-ID des nouveaux mails est memorise (colonne
+       message_id) pour que les reponses s'attachent au bon fil.
+     • si la table "reponses" ou la colonne "message_id" n'existent
+       pas encore, tout fonctionne comme en v4 (verification a
+       chaque cycle : passer le SQL suffit, sans redeployer).
    Nouveau en v4 :
      • quand les regles ne reconnaissent rien, le mail est soumis
        a Claude (Haiku) qui lit le message et propose un classement
@@ -8,24 +20,50 @@
        sur les mails qui finiraient en "a classer" (peu d'appels)
      • si la cle ANTHROPIC_API_KEY est absente, tout fonctionne
        exactement comme en v3.2
-   Correction v3.2 :
-     • les plateformes (Mariages.net, Lab Event) sont traitees
-       AVANT la regle technique : leurs demandes sont des leads
-   Corrections v3.1 :
-     • "avoir" retire de la regle compta (matchait savoir/pouvoir)
-     • adresses generiques (info@mariages.net, notify@lab-event,
-       contact@domainedelacourdeslys) exclues de l'annuaire
-     • demarchage et technique evalues AVANT les regles metier
-     • expediteurs comptables reconnus (banques, PayFiP, URSSAF)
-     • mails envoyes par le Domaine identifies comme tels
-   Ne supprime, ne deplace et ne modifie JAMAIS un mail.
+   Ne supprime, ne deplace et ne modifie JAMAIS un mail recu.
    ============================================================ */
 const { ImapFlow } = require("imapflow");
 const { simpleParser } = require("mailparser");
 const { createClient } = require("@supabase/supabase-js");
+const nodemailer = require("nodemailer");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const FREQ = Math.max(1, parseInt(process.env.FREQUENCE_MINUTES || "3", 10)) * 60 * 1000;
+
+/* ---------- Envoi SMTP (reponses validees) ---------- */
+const SMTP_HOST = process.env.SMTP_HOST || process.env.IMAP_HOST;
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || "465", 10);
+const SIGNATURE = process.env.SIGNATURE || "L'equipe du Domaine de la Cour des Lys";
+const EXPEDITEUR_NOM = process.env.EXPEDITEUR_NOM || "Domaine de la Cour des Lys";
+
+const smtp = nodemailer.createTransport({
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  secure: SMTP_PORT === 465,
+  auth: { user: process.env.MAIL_UTILISATEUR, pass: process.env.MAIL_MOT_DE_PASSE },
+});
+
+/* Etat des extensions v5 (re-verifie a chaque cycle tant que faux) */
+let tableReponsesOK = false;
+let colonneMessageIdOK = false;
+let avertissementReponses = false;
+
+async function verifierExtensionsV5() {
+  if (!tableReponsesOK) {
+    const { error } = await supabase.from("reponses").select("id").limit(1);
+    if (!error) {
+      tableReponsesOK = true;
+      console.log("Reponses depuis CDL : table 'reponses' trouvee, envoi active.");
+    } else if (!avertissementReponses) {
+      avertissementReponses = true;
+      console.log("Reponses depuis CDL : table 'reponses' absente — fonction en veille (passer le SQL pour l'activer).");
+    }
+  }
+  if (!colonneMessageIdOK) {
+    const { error } = await supabase.from("mails").select("message_id").limit(1);
+    if (!error) colonneMessageIdOK = true;
+  }
+}
 
 /* ---------- Adresses a ne JAMAIS traiter comme un dossier ---------- */
 const GENERIQUES = [
@@ -79,11 +117,36 @@ function adresseDansCorps(corps) {
 }
 
 
-/* ---------- Classement par IA (dernier recours) ---------- */
+/* ---------- Appels a l'API Anthropic ---------- */
 const CLE_IA = process.env.ANTHROPIC_API_KEY || "";
 const MODELE_IA = process.env.MODELE_IA || "claude-haiku-4-5-20251001";
+const MODELE_REDACTION = process.env.MODELE_REDACTION || "claude-sonnet-4-6";
 let compteurIA = 0;
 
+async function appelerClaude(modele, consigne, message, maxTokens) {
+  const reponse = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": CLE_IA,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: modele,
+      max_tokens: maxTokens,
+      system: consigne,
+      messages: [{ role: "user", content: message }],
+    }),
+  });
+  if (!reponse.ok) throw new Error(`API Anthropic ${reponse.status}`);
+  const data = await reponse.json();
+  return (data.content || [])
+    .map((b) => (b.type === "text" ? b.text : ""))
+    .join("")
+    .trim();
+}
+
+/* ---------- Classement par IA (dernier recours) ---------- */
 const CATEGORIES_VALIDES = ["client", "prospect", "compta", "technique", "demarchage", "a_classer"];
 
 async function classerParIA(mail) {
@@ -112,30 +175,7 @@ Message :
 ${(mail.corps || mail.extrait || "(vide)").slice(0, 2000)}`;
 
   try {
-    const reponse = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": CLE_IA,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: MODELE_IA,
-        max_tokens: 300,
-        system: consigne,
-        messages: [{ role: "user", content: message }],
-      }),
-    });
-
-    if (!reponse.ok) {
-      console.log(`  ! IA indisponible (${reponse.status}) — classement par regles conserve.`);
-      return null;
-    }
-
-    const data = await reponse.json();
-    const texte = (data.content || [])
-      .map((b) => (b.type === "text" ? b.text : ""))
-      .join("")
+    const texte = (await appelerClaude(MODELE_IA, consigne, message, 300))
       .replace(/```json|```/g, "")
       .trim();
 
@@ -151,6 +191,136 @@ ${(mail.corps || mail.extrait || "(vide)").slice(0, 2000)}`;
   } catch (e) {
     console.log("  ! IA : ", e.message, "— classement par regles conserve.");
     return null;
+  }
+}
+
+/* ---------- Redaction d'un brouillon de reponse ---------- */
+async function redigerBrouillon(mail) {
+  const consigne = `Tu rediges un brouillon de reponse a un mail recu par le Domaine de la Cour des Lys, un lieu de reception en Normandie (mariages, seminaires, hebergement). Ce brouillon sera relu, modifie et valide par un membre de l'equipe avant tout envoi.
+
+Regles imperatives :
+- Reponds en francais, vouvoiement, ton chaleureux et professionnel, sans emphase excessive.
+- Sois concis : quelques phrases suffisent le plus souvent.
+- N'invente JAMAIS une information factuelle : prix, date, disponibilite, nom, condition. Si la reponse en depend, ecris [A COMPLETER : ce qu'il faut verifier] a l'endroit voulu.
+- Ne confirme jamais une reservation, une remise ou un engagement : propose, ou signale [A VERIFIER].
+- Termine exactement par : "${SIGNATURE}"
+- Reponds UNIQUEMENT avec le texte du mail, sans objet, sans balises, sans commentaire autour.`;
+
+  let fiche = "";
+  const connu = mail.expediteur_email && ANNUAIRE.get((mail.expediteur_email || "").toLowerCase());
+  if (connu) {
+    fiche = `\n\nFiche du dossier connu chez nous :
+- Nom : ${connu.nom || connu.contact || "?"}
+- Statut : ${connu.statut || "?"}
+- Projet : ${connu.titre_projet || "?"}
+- Date de l'evenement : ${connu.date_debut || "?"}`;
+  }
+
+  const message = `Mail recu, auquel il faut repondre :
+Expediteur : ${mail.expediteur || "(inconnu)"} <${mail.expediteur_email || "?"}>
+Objet : ${mail.objet || "(sans objet)"}
+Categorie CDL : ${mail.categorie || "?"} · Dossier : ${mail.dossier || "aucun"}${fiche}
+
+Corps du message :
+${(mail.corps || mail.extrait || "(vide)").slice(0, 3000)}`;
+
+  return appelerClaude(MODELE_REDACTION, consigne, message, 1000);
+}
+
+/* ---------- Traitement des reponses (brouillons + envois) ---------- */
+let reponsesEnCours = false;
+
+async function traiterReponses() {
+  if (!tableReponsesOK || reponsesEnCours) return;
+  reponsesEnCours = true;
+  try {
+    const { data, error } = await supabase
+      .from("reponses")
+      .select("*")
+      .in("statut", ["brouillon_demande", "a_envoyer"])
+      .order("cree_le", { ascending: true })
+      .limit(10);
+    if (error) { console.log("  ! Lecture reponses :", error.message); return; }
+
+    for (const rep of data || []) {
+      if (rep.statut === "brouillon_demande") await faireBrouillon(rep);
+      else if (rep.statut === "a_envoyer") await faireEnvoi(rep);
+    }
+  } catch (e) {
+    console.log("  ! Traitement reponses :", e.message);
+  } finally {
+    reponsesEnCours = false;
+  }
+}
+
+/* Reserve une ligne (evite tout double traitement) : ne continue que si
+   la ligne etait encore dans le statut attendu. */
+async function reserver(rep, statutAttendu, statutEnCours) {
+  const { data, error } = await supabase
+    .from("reponses")
+    .update({ statut: statutEnCours })
+    .eq("id", rep.id)
+    .eq("statut", statutAttendu)
+    .select();
+  return !error && data && data.length > 0;
+}
+
+async function majReponse(id, champs) {
+  const { error } = await supabase.from("reponses").update(champs).eq("id", id);
+  if (error) console.log(`  ! Mise a jour reponse ${id} :`, error.message);
+}
+
+async function faireBrouillon(rep) {
+  if (!(await reserver(rep, "brouillon_demande", "brouillon_en_cours"))) return;
+  if (!CLE_IA) {
+    await majReponse(rep.id, { statut: "erreur", erreur: "Pas de cle ANTHROPIC_API_KEY sur le serveur." });
+    return;
+  }
+  try {
+    const { data: mail } = await supabase
+      .from("mails").select("*").eq("id", rep.mail_id).single();
+    if (!mail) throw new Error("mail introuvable en base");
+
+    const brouillon = await redigerBrouillon(mail);
+    if (!brouillon) throw new Error("reponse vide de l'IA");
+
+    await majReponse(rep.id, { corps: brouillon, statut: "brouillon_pret", erreur: null });
+    console.log(`  + Brouillon redige pour ${rep.destinataire} (reponse ${rep.id}).`);
+  } catch (e) {
+    console.log(`  ! Brouillon ${rep.id} :`, e.message);
+    await majReponse(rep.id, { statut: "erreur", erreur: "Brouillon impossible : " + e.message });
+  }
+}
+
+async function faireEnvoi(rep) {
+  if (!(await reserver(rep, "a_envoyer", "envoi_en_cours"))) return;
+  try {
+    const dest = (rep.destinataire || "").trim();
+    if (!/^[\w.+-]+@[\w-]+\.[\w.-]+$/.test(dest)) throw new Error("adresse destinataire invalide : " + dest);
+    if (!rep.corps || !rep.corps.trim()) throw new Error("corps du message vide");
+
+    let entetes = {};
+    if (rep.mail_id && colonneMessageIdOK) {
+      const { data: mail } = await supabase
+        .from("mails").select("message_id").eq("id", rep.mail_id).single();
+      if (mail && mail.message_id) {
+        entetes = { inReplyTo: mail.message_id, references: mail.message_id };
+      }
+    }
+
+    await smtp.sendMail({
+      from: `"${EXPEDITEUR_NOM}" <${process.env.MAIL_UTILISATEUR}>`,
+      to: dest,
+      subject: rep.objet || "Re : votre message",
+      text: rep.corps,
+      ...entetes,
+    });
+
+    await majReponse(rep.id, { statut: "envoye", envoye_le: new Date(), erreur: null });
+    console.log(`  + Reponse ${rep.id} envoyee a ${dest}.`);
+  } catch (e) {
+    console.log(`  ! Envoi ${rep.id} :`, e.message);
+    await majReponse(rep.id, { statut: "erreur", erreur: "Envoi impossible : " + e.message });
   }
 }
 
@@ -269,6 +439,7 @@ function classer(mail) {
 
 /* ---------- Un cycle de lecture ---------- */
 async function cycle() {
+  await verifierExtensionsV5();
   await chargerAnnuaire();
 
   const client = new ImapFlow({
@@ -320,6 +491,7 @@ async function cycle() {
         lu: false,
         traite: false,
       };
+      if (colonneMessageIdOK) mail.message_id = parsed.messageId || null;
 
       let { categorie, dossier, analyse } = classer(mail);
 
@@ -367,12 +539,13 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v4 (LECTURE SEULE) demarre.");
+  console.log("CDL — Lecteur de boite mail v5 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
-  console.log(`Verification toutes les ${FREQ / 60000} minute(s).`);
+  console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses relevees toutes les 30 s.`);
   console.log(CLE_IA
-    ? `Classement par IA actif (${MODELE_IA}) en secours des regles.`
-    : "Classement par regles seules (pas de cle ANTHROPIC_API_KEY).");
+    ? `Classement par IA actif (${MODELE_IA}) en secours des regles · brouillons rediges par ${MODELE_REDACTION}.`
+    : "Classement par regles seules (pas de cle ANTHROPIC_API_KEY) — brouillons IA indisponibles.");
+  console.log(`Envoi SMTP : ${SMTP_HOST}:${SMTP_PORT} (uniquement les reponses validees dans CDL).`);
 
   const boucle = async () => {
     try {
@@ -385,4 +558,5 @@ async function cycle() {
 
   await boucle();
   setInterval(boucle, FREQ);
+  setInterval(traiterReponses, 30000);
 })();
