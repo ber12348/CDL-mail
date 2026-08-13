@@ -1,6 +1,17 @@
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v5  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v6  ·  LECTURE SEULE (IMAP)
    ------------------------------------------------------------
+   Nouveau en v6 :
+     • les pieces jointes sont rangees dans Supabase Storage
+       (coffre "pieces") et deviennent ouvrables depuis CDL.
+       Au-dela de 15 Mo, seul le nom est garde, comme avant.
+     • classement : l'annuaire des dossiers est consulte AVANT
+       la regle "compta par expediteur" (une cliente ecrivant
+       depuis sa banque n'est plus prise pour une facture), et
+       les codes/notifications ne sont plus detectes que dans
+       l'objet du mail (moins de faux "technique").
+     • si le coffre "pieces" n'existe pas encore, tout fonctionne
+       comme en v5 (verification a chaque cycle).
    Nouveau en v5 :
      • repond aux mails depuis CDL : surveille la table "reponses"
        (Supabase). Quand l'equipe demande un brouillon, Claude le
@@ -43,12 +54,28 @@ const smtp = nodemailer.createTransport({
   auth: { user: process.env.MAIL_UTILISATEUR, pass: process.env.MAIL_MOT_DE_PASSE },
 });
 
-/* Etat des extensions v5 (re-verifie a chaque cycle tant que faux) */
+/* ---------- Rangement des pieces jointes (Supabase Storage) ---------- */
+const BUCKET = process.env.BUCKET_PIECES || "pieces";
+const TAILLE_MAX_PJ = parseInt(process.env.TAILLE_MAX_PJ_MO || "15", 10) * 1024 * 1024;
+
+/* Etat des extensions (re-verifie a chaque cycle tant que faux) */
 let tableReponsesOK = false;
 let colonneMessageIdOK = false;
+let bucketOK = false;
 let avertissementReponses = false;
+let avertissementBucket = false;
 
 async function verifierExtensionsV5() {
+  if (!bucketOK) {
+    const { error } = await supabase.storage.from(BUCKET).list("", { limit: 1 });
+    if (!error) {
+      bucketOK = true;
+      console.log(`Pieces jointes : coffre '${BUCKET}' trouve, rangement actif.`);
+    } else if (!avertissementBucket) {
+      avertissementBucket = true;
+      console.log(`Pieces jointes : coffre '${BUCKET}' absent — seuls les noms sont gardes (passer le SQL pour l'activer).`);
+    }
+  }
   if (!tableReponsesOK) {
     const { error } = await supabase.from("reponses").select("id").limit(1);
     if (!error) {
@@ -370,7 +397,9 @@ function classer(mail) {
     "3douest", "apple.com", "google.com", "microsoft", "3cx", "search-console",
     "wordpress", "wix.com", "squarespace"];
   const CODES = /code de verification|verification code|2fa|double authentification|reinitialisation|password reset|verify your device|connexion detectee|message vocal|appel manque|memory limit|deploy/;
-  if (OUTILS.some((m) => de.includes(m)) || CODES.test(tout)) {
+  // v6 : les codes/notifications ne sont cherches que dans l'objet — un mail
+  // de client qui *cite* un mot technique dans son texte n'est plus happe ici
+  if (OUTILS.some((m) => de.includes(m)) || CODES.test(objet)) {
     return { categorie: "technique", dossier: null,
       analyse: "Notification technique — aucune action commerciale" };
   }
@@ -385,16 +414,9 @@ function classer(mail) {
       analyse: "Sollicitation commerciale externe — sans suite" };
   }
 
-  /* 4. COMPTA par expediteur : banques, tresor, organismes */
-  const COMPTA_DE = ["payfip", "sips-services", "credit-agricole", "creditagricole",
-    "ca-normandie", "banque", "urssaf", "impots.gouv", "dgfip", "amazon.fr",
-    "amazon.com", "sage", "cegid", "pennylane", "qonto", "stripe", "anett"];
-  if (COMPTA_DE.some((m) => de.includes(m) || nomDe.includes(m))) {
-    return { categorie: "compta", dossier: "Compta",
-      analyse: "Piece comptable (banque, tresor public ou fournisseur)" };
-  }
-
-  /* 5. Expediteur connu : la reponse la plus fiable */
+  /* 4. Expediteur connu : la reponse la plus fiable — consultee AVANT la
+        regle compta (v6) : une cliente qui ecrit depuis sa banque ou son
+        entreprise reste une cliente, pas une facture */
   const connu = ANNUAIRE.get(de);
   if (connu) {
     if (connu.statut === "client") {
@@ -407,6 +429,20 @@ function classer(mail) {
     }
     return { categorie: "prospect", dossier: libelle(connu),
       analyse: "Ancien contact (dossier perdu) qui reecrit — piste a requalifier" };
+  }
+
+  /* 5. COMPTA par expediteur : banques, tresor, organismes — mais pas si le
+        mail parle manifestement d'un evenement chez nous */
+  const COMPTA_DE = ["payfip", "sips-services", "credit-agricole", "creditagricole",
+    "ca-normandie", "banque", "urssaf", "impots.gouv", "dgfip", "amazon.fr",
+    "amazon.com", "sage", "cegid", "pennylane", "qonto", "stripe", "anett"];
+  if (COMPTA_DE.some((m) => de.includes(m) || nomDe.includes(m))) {
+    if (/votre evenement|votre événement|votre mariage|votre seminaire|votre séminaire|devis pour votre|au domaine de la cour des lys/.test(tout)) {
+      return { categorie: "prospect", dossier: "A rattacher",
+        analyse: "Expediteur type banque mais le mail parle d'un evenement chez nous — a rattacher" };
+    }
+    return { categorie: "compta", dossier: "Compta",
+      analyse: "Piece comptable (banque, tresor public ou fournisseur)" };
   }
 
   /* 6. COMPTA par contenu — sans le mot "avoir" */
@@ -471,13 +507,22 @@ async function cycle() {
       const from = (parsed.from && parsed.from.value && parsed.from.value[0]) || {};
 
       const corps = (parsed.text || "").trim();
-      const pieces = (parsed.attachments || [])
-        .filter((a) => a.filename)
-        .map((a) => ({
-          nom: a.filename,
-          type: a.contentType || null,
-          taille: a.size || null,
-        }));
+      const pieces = [];
+      for (const a of parsed.attachments || []) {
+        if (!a.filename) continue;
+        const piece = { nom: a.filename, type: a.contentType || null, taille: a.size || null };
+        if (bucketOK && a.content && (a.size || 0) <= TAILLE_MAX_PJ) {
+          const nomSur = a.filename.replace(/[^\w.\-]+/g, "_").slice(-80);
+          const chemin = `${msg.uid}/${pieces.length + 1}-${nomSur}`;
+          const { error: errPJ } = await supabase.storage.from(BUCKET).upload(chemin, a.content, {
+            contentType: a.contentType || "application/octet-stream",
+            upsert: true,
+          });
+          if (!errPJ) piece.chemin = chemin;
+          else console.log(`  ! Piece jointe '${a.filename}' non rangee : ${errPJ.message}`);
+        }
+        pieces.push(piece);
+      }
 
       const mail = {
         uid_imap: msg.uid,
@@ -539,7 +584,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v5 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v6 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses relevees toutes les 30 s.`);
   console.log(CLE_IA
