@@ -621,7 +621,8 @@ async function fabriquerDevis(dem) {
 
     const consigne = `Tu prepares des devis pour le Domaine de la Cour des Lys (lieu de receptions en Normandie).
 Tu recois la demande de l'equipe, la fiche de l'evenement et le catalogue des prestations.
-Reponds UNIQUEMENT par un objet JSON (aucun texte autour) :
+Reponds UNIQUEMENT par un objet JSON. Commence ta reponse DIRECTEMENT par { sans aucune phrase,
+aucune explication, aucun commentaire avant ou apres. Forme attendue :
 {
  "titre": "...", "clientele": "prive" ou "professionnel", "nbPersonnes": nombre,
  "prestaDebut": "AAAA-MM-JJ", "prestaHeureDebut": "HH:MM", "prestaFin": "AAAA-MM-JJ", "prestaHeureFin": "HH:MM",
@@ -652,7 +653,11 @@ ${JSON.stringify(catalogue)}
 Date du jour : ${new Date().toISOString().slice(0, 10)}`;
 
     const texte = await appelerClaude(MODELE_REDACTION, consigne, message, 3500);
-    const json = JSON.parse(texte.replace(/^```[a-z]*\s*/i, "").replace(/```\s*$/, ""));
+    /* Le modele bavarde parfois autour du JSON : on extrait du premier { au dernier }. */
+    const debutJson = texte.indexOf("{");
+    const finJson = texte.lastIndexOf("}");
+    if (debutJson < 0 || finJson <= debutJson) throw new Error("le modele n'a pas repondu en JSON");
+    const json = JSON.parse(texte.slice(debutJson, finJson + 1));
 
     const parId = new Map(articles.map((a) => [a.id, a]));
     const lignes = [];
