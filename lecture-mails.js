@@ -1,6 +1,27 @@
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v6  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v8  ·  LECTURE SEULE (IMAP)
    ------------------------------------------------------------
+   Nouveau en v8 :
+     • fabrique de devis : surveille la table "demandes_devis"
+       (bouton « Demander à l'assistant » dans CDL, onglet Finance).
+       Claude monte le devis depuis la bibliotheque d'articles
+       (jamais de prix inventes pour un article du catalogue) et le
+       range en BROUILLON dans la table "devis". RIEN ne part au
+       client : l'equipe relit, imprime et envoie elle-meme.
+     • la sauvegarde hebdomadaire couvre aussi les tables du
+       planning et des devis (evenements, espaces, articles, devis,
+       reglages, maries_acces, demandes_devis).
+     • si la table "demandes_devis" n'existe pas encore, tout
+       fonctionne comme en v7 (verification a chaque cycle).
+   Nouveau en v7 :
+     • sauvegarde automatique : chaque dimanche soir (ou des que
+       la derniere sauvegarde a plus de 8 jours), le lecteur
+       exporte TOUTES les tables (CDL + Ready) en un fichier JSON
+       et se l'envoie par mail a la boite du Domaine. La copie de
+       secours vit ainsi chez OVH, hors de Supabase.
+     • premier export envoye immediatement au premier demarrage.
+     • jalon de sauvegarde memorise dans mails_etat (ligne id=2),
+       sans aucune modification de schema.
    Nouveau en v6 :
      • les pieces jointes sont rangees dans Supabase Storage
        (coffre "pieces") et deviennent ouvrables depuis CDL.
@@ -54,6 +75,67 @@ const smtp = nodemailer.createTransport({
   auth: { user: process.env.MAIL_UTILISATEUR, pass: process.env.MAIL_MOT_DE_PASSE },
 });
 
+/* ---------- Sauvegarde hebdomadaire par mail ---------- */
+const SAUVEGARDE_DEST = process.env.SAUVEGARDE_DEST || process.env.MAIL_UTILISATEUR;
+const JOUR_SAUVEGARDE = parseInt(process.env.SAUVEGARDE_JOUR || "0", 10); // 0 = dimanche
+const TABLES_SAUVEGARDE = ["mails", "mails_etat", "dossiers", "reponses", "depenses",
+  "trajets", "plannings", "equipe", "mois_arretes", "dossier_pieces", "taches",
+  "besoins", "journal", "fiches_perso", "rondes_en_cours", "horaires_defaut",
+  "evenements", "espaces", "articles", "devis", "reglages", "maries_acces", "demandes_devis"];
+
+async function toutLire(table) {
+  const lignes = [];
+  for (let de = 0; ; de += 1000) {
+    const { data, error } = await supabase.from(table).select("*").range(de, de + 999);
+    if (error) return { lignes, erreur: error.message };
+    lignes.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return { lignes };
+}
+
+async function sauvegarder() {
+  const contenu = { exporte_le: new Date().toISOString(), origine: "CDL lecteur v8", tables: {} };
+  const resume = [];
+  for (const t of TABLES_SAUVEGARDE) {
+    const { lignes, erreur } = await toutLire(t);
+    if (erreur && !lignes.length) { resume.push(`${t} : indisponible (${erreur})`); continue; }
+    contenu.tables[t] = lignes;
+    resume.push(`${t} : ${lignes.length} ligne(s)`);
+  }
+  const json = JSON.stringify(contenu);
+  const jour = new Date().toISOString().slice(0, 10);
+
+  await smtp.sendMail({
+    from: `"${EXPEDITEUR_NOM}" <${process.env.MAIL_UTILISATEUR}>`,
+    to: SAUVEGARDE_DEST,
+    subject: `CDL — Sauvegarde des donnees (${jour})`,
+    text: `Sauvegarde automatique de la base CDL/Ready, generee par le lecteur.\n\n${resume.join("\n")}\n\nCe fichier permet de tout restaurer si la base venait a disparaitre.\nConservez ce mail : il constitue votre copie de secours hors Supabase.`,
+    attachments: [{ filename: `sauvegarde-cdl-${jour}.json`, content: json }],
+  });
+
+  await supabase.from("mails_etat").upsert({ id: 2, derniere_verif: new Date() });
+  console.log(`Sauvegarde envoyee a ${SAUVEGARDE_DEST} (${Math.round(json.length / 1024)} Ko, ${resume.length} tables).`);
+}
+
+let sauvegardeEnCours = false;
+async function verifierSauvegarde() {
+  if (sauvegardeEnCours) return;
+  sauvegardeEnCours = true;
+  try {
+    const { data } = await supabase.from("mails_etat").select("derniere_verif").eq("id", 2).single();
+    const derniere = data && data.derniere_verif ? new Date(data.derniere_verif) : null;
+    const ageJours = derniere ? (Date.now() - derniere.getTime()) / 86400000 : Infinity;
+    const maintenant = new Date();
+    const cEstLHeure = maintenant.getDay() === JOUR_SAUVEGARDE && maintenant.getHours() >= 18 && ageJours >= 1;
+    if (ageJours >= 8 || cEstLHeure) await sauvegarder();
+  } catch (e) {
+    console.log("  ! Sauvegarde :", e.message, "— nouvel essai au prochain cycle.");
+  } finally {
+    sauvegardeEnCours = false;
+  }
+}
+
 /* ---------- Rangement des pieces jointes (Supabase Storage) ---------- */
 const BUCKET = process.env.BUCKET_PIECES || "pieces";
 const TAILLE_MAX_PJ = parseInt(process.env.TAILLE_MAX_PJ_MO || "15", 10) * 1024 * 1024;
@@ -62,8 +144,10 @@ const TAILLE_MAX_PJ = parseInt(process.env.TAILLE_MAX_PJ_MO || "15", 10) * 1024 
 let tableReponsesOK = false;
 let colonneMessageIdOK = false;
 let bucketOK = false;
+let tableDemandesOK = false;
 let avertissementReponses = false;
 let avertissementBucket = false;
+let avertissementDemandes = false;
 
 async function verifierExtensionsV5() {
   if (!bucketOK) {
@@ -89,6 +173,16 @@ async function verifierExtensionsV5() {
   if (!colonneMessageIdOK) {
     const { error } = await supabase.from("mails").select("message_id").limit(1);
     if (!error) colonneMessageIdOK = true;
+  }
+  if (!tableDemandesOK) {
+    const { error } = await supabase.from("demandes_devis").select("id").limit(1);
+    if (!error) {
+      tableDemandesOK = true;
+      console.log("Fabrique de devis : table 'demandes_devis' trouvee, assistant actif.");
+    } else if (!avertissementDemandes) {
+      avertissementDemandes = true;
+      console.log("Fabrique de devis : table 'demandes_devis' absente — en veille (passer le SQL pour l'activer).");
+    }
   }
 }
 
@@ -473,6 +567,173 @@ function classer(mail) {
     analyse: "Non reconnu automatiquement — a classer manuellement" };
 }
 
+/* ---------- Fabrique de devis (demandes deposees dans CDL) ----------
+   L'equipe decrit le devis en francais dans l'onglet Finance ; Claude
+   le monte depuis la bibliotheque d'articles et le range en BROUILLON.
+   Les prix des articles du catalogue viennent TOUJOURS de la base,
+   jamais du modele. */
+let demandesEnCours = false;
+const arrondi2 = (x) => Math.round(x * 100) / 100;
+
+function calculLigneDevis(l) {
+  const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+  const q = num(l.quantite) || 0;
+  const coef = q * (1 - (num(l.remisePct) || 0) / 100);
+  let ht10 = 0, ht20 = 0;
+  if (l.tvaMode === "mixte") { ht10 = num(l.partHT10) * coef; ht20 = num(l.partHT20) * coef; }
+  else if (String(l.tva) === "10") ht10 = num(l.prixHT) * coef;
+  else ht20 = num(l.prixHT) * coef;
+  return { ht: arrondi2(ht10 + ht20), ttc: arrondi2(ht10 * 1.1 + ht20 * 1.2) };
+}
+function totalTTCDevis(lignes, avecOptions) {
+  let t = 0;
+  for (const l of lignes || []) { if (l.enOption && !avecOptions) continue; t += calculLigneDevis(l).ttc; }
+  return arrondi2(t);
+}
+
+async function prochainNumeroDevisServeur() {
+  const an = new Date().getFullYear();
+  let max = an === 2026 ? 117 : 0;
+  const { data } = await supabase.from("devis").select("donnees").limit(2000);
+  for (const d of data || []) {
+    const m = /^DEV-(\d{4})-(\d+)$/.exec(((d.donnees || {}).numero) || "");
+    if (m && Number(m[1]) === an) max = Math.max(max, Number(m[2]));
+  }
+  return `DEV-${an}-${String(max + 1).padStart(4, "0")}`;
+}
+
+async function fabriquerDevis(dem) {
+  const don = dem.donnees || {};
+  try {
+    let ev = null;
+    if (don.evenementId) {
+      const { data } = await supabase.from("evenements").select("donnees").eq("id", don.evenementId).single();
+      ev = data ? data.donnees : null;
+    }
+    const { data: arts } = await supabase.from("articles").select("donnees").limit(500);
+    const articles = (arts || []).map((a) => a.donnees).filter((a) => a && a.actif !== false);
+    if (!articles.length) throw new Error("bibliotheque d'articles vide");
+    const catalogue = articles.map((a) => ({
+      id: a.id, ref: a.reference || "", nom: a.nom, section: a.section, famille: a.famille,
+      unite: a.unite, tva: a.tvaMode === "mixte" ? "mixte(10/20)" : a.tva + "%",
+      prixHT: a.tvaMode === "mixte" ? `${a.partHT10} a 10% + ${a.partHT20} a 20%` : a.prixHT,
+    }));
+
+    const consigne = `Tu prepares des devis pour le Domaine de la Cour des Lys (lieu de receptions en Normandie).
+Tu recois la demande de l'equipe, la fiche de l'evenement et le catalogue des prestations.
+Reponds UNIQUEMENT par un objet JSON (aucun texte autour) :
+{
+ "titre": "...", "clientele": "prive" ou "professionnel", "nbPersonnes": nombre,
+ "prestaDebut": "AAAA-MM-JJ", "prestaHeureDebut": "HH:MM", "prestaFin": "AAAA-MM-JJ", "prestaHeureFin": "HH:MM",
+ "ceremonie": "laique" | "religieuse" | "",
+ "lignes": [
+   { "articleId": "art_...", "quantite": n, "remisePct": 0, "enOption": false, "groupe": "TITRE DE SECTION" },
+   { "libre": true, "nom": "...", "description": "...", "prixHT": n, "tva": "10" ou "20", "unite": "personne"|"unite"|"forfait"|"nuit", "quantite": n, "remisePct": 0, "enOption": false, "groupe": "..." }
+ ],
+ "hypotheses": ["ce que tu as suppose ou n'as pas trouve au catalogue"]
+}
+Regles imperatives :
+- des qu'une prestation existe au catalogue, utilise son articleId — n'invente JAMAIS de prix pour elle ;
+- les lignes libres ne servent qu'aux prestations absentes du catalogue (prix 0 si inconnu) ;
+- quantite des articles factures "par personne" = nombre de personnes ;
+- groupes courts en MAJUSCULES (PRIVATISATION, RESTAURATION, HEBERGEMENTS, VENTES ADDITIONNELLES...) ;
+- "en option" uniquement si la demande le presente comme optionnel ou incertain ;
+- pour un mariage choisis la privatisation de la bonne saison (estivale mai-sept, mi-saison oct-nov et mars-avril, hivernale dec-fev).`;
+
+    const message = `Demande de l'equipe :
+${don.texte || "(vide)"}
+
+Evenement lie :
+${ev ? JSON.stringify({ client: ev.client, categorie: ev.categorie, type: ev.type, dateDebut: ev.dateDebut, dateFin: ev.dateFin, heureDebut: ev.heureDebut, heureFin: ev.heureFin, nbInvites: ev.nbInvites, nbRepas: ev.nbRepas, nbVinHonneur: ev.nbVinHonneur, ceremonie: ev.ceremonie }) : "(aucun)"}
+
+Catalogue :
+${JSON.stringify(catalogue)}
+
+Date du jour : ${new Date().toISOString().slice(0, 10)}`;
+
+    const texte = await appelerClaude(MODELE_REDACTION, consigne, message, 3500);
+    const json = JSON.parse(texte.replace(/^```[a-z]*\s*/i, "").replace(/```\s*$/, ""));
+
+    const parId = new Map(articles.map((a) => [a.id, a]));
+    const lignes = [];
+    let seq = 0;
+    for (const lg of json.lignes || []) {
+      const idL = `lg_${Date.now()}_${(seq++).toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+      const commun = {
+        id: idL, groupe: lg.groupe || "", quantite: Number(lg.quantite) || 1,
+        remisePct: Number(lg.remisePct) || 0, enOption: !!lg.enOption,
+        dateDebut: "", dateFin: "", heureDebut: "", heureFin: "", afficherDates: false,
+      };
+      const a = lg.articleId ? parId.get(lg.articleId) : null;
+      if (a) {
+        lignes.push({ ...commun, articleId: a.id, reference: a.reference || "", nom: a.nom, description: a.description || "",
+          unite: a.unite, tvaMode: a.tvaMode === "mixte" ? "mixte" : "simple", tva: a.tva || "20",
+          prixHT: a.prixHT || "", partHT10: a.partHT10 || "", partHT20: a.partHT20 || "" });
+      } else {
+        lignes.push({ ...commun, reference: "", nom: lg.nom || "Prestation à préciser", description: lg.description || "",
+          unite: lg.unite || "forfait", tvaMode: "simple", tva: String(lg.tva || "20"),
+          prixHT: Number(lg.prixHT) || 0, partHT10: "", partHT20: "" });
+      }
+    }
+    if (!lignes.length) throw new Error("le modele n'a produit aucune ligne");
+
+    const clientele = json.clientele === "professionnel" ? "professionnel" : "prive";
+    const famille = clientele === "professionnel" ? "pro" : "mariage";
+    const jour = new Date().toISOString().slice(0, 10);
+    const debut = json.prestaDebut || (ev && ev.dateDebut) || jour;
+    const moins = (dateISO, jours) => { const t = new Date(dateISO + "T12:00:00"); t.setDate(t.getDate() - jours); return t.toISOString().slice(0, 10); };
+    const echeances = famille === "mariage"
+      ? [{ pct: 30, libelle: "À la signature", date: jour }, { pct: 70, libelle: "Solde — 2 mois avant l'événement", date: moins(debut, 60) }]
+      : [{ pct: 50, libelle: "À la signature", date: jour }, { pct: 50, libelle: "Solde — 72 h avant l'événement", date: moins(debut, 3) }];
+
+    const numero = await prochainNumeroDevisServeur();
+    const idDevis = `dv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const devis = {
+      id: idDevis, evenementId: don.evenementId || "", numero, date: jour, statut: "brouillon", nomModele: "",
+      titre: json.titre || (don.texte || "Devis").slice(0, 70), famille, clientele,
+      client: (ev && ev.client) || "", nbPersonnes: json.nbPersonnes || (ev && (ev.nbRepas || ev.nbInvites)) || "",
+      emailClient: (ev && ev.email) || "", telClient: (ev && ev.telephone) || "",
+      prestaDebut: json.prestaDebut || (ev && ev.dateDebut) || "", prestaHeureDebut: json.prestaHeureDebut || "",
+      prestaFin: json.prestaFin || "", prestaHeureFin: json.prestaHeureFin || "",
+      ceremonie: json.ceremonie || "",
+      lignes, echeances,
+      totalTTC: totalTTCDevis(lignes, false), totalTTCAvecOptions: totalTTCDevis(lignes, true),
+      noteAssistant: (Array.isArray(json.hypotheses) && json.hypotheses.length
+        ? "Hypothèses : " + json.hypotheses.join(" · ")
+        : "Devis préparé par l'assistant — à relire avant envoi."),
+    };
+    const { error: eIns } = await supabase.from("devis").insert({ id: idDevis, donnees: devis, modifie_le: new Date().toISOString() });
+    if (eIns) throw new Error(eIns.message);
+    await supabase.from("demandes_devis").update({
+      donnees: { ...don, statut: "fait", devisId: idDevis, numero },
+      modifie_le: new Date().toISOString(),
+    }).eq("id", dem.id);
+    console.log(`Assistant : devis ${numero} fabrique (${lignes.length} ligne(s), ${devis.totalTTC} € TTC).`);
+  } catch (e) {
+    console.log("  ! Fabrication devis :", e.message);
+    try {
+      await supabase.from("demandes_devis").update({
+        donnees: { ...don, statut: "erreur", erreur: e.message },
+        modifie_le: new Date().toISOString(),
+      }).eq("id", dem.id);
+    } catch (e2) { /* on retentera au prochain cycle */ }
+  }
+}
+
+async function traiterDemandesDevis() {
+  if (!tableDemandesOK || demandesEnCours || !CLE_IA) return;
+  demandesEnCours = true;
+  try {
+    const { data } = await supabase.from("demandes_devis").select("*").limit(20);
+    const attente = (data || []).filter((x) => (x.donnees || {}).statut === "en_attente");
+    for (const dem of attente) await fabriquerDevis(dem);
+  } catch (e) {
+    console.log("  ! Demandes de devis :", e.message);
+  } finally {
+    demandesEnCours = false;
+  }
+}
+
 /* ---------- Un cycle de lecture ---------- */
 async function cycle() {
   await verifierExtensionsV5();
@@ -584,13 +845,15 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v6 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v8 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
-  console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses relevees toutes les 30 s.`);
+  console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
     ? `Classement par IA actif (${MODELE_IA}) en secours des regles · brouillons rediges par ${MODELE_REDACTION}.`
     : "Classement par regles seules (pas de cle ANTHROPIC_API_KEY) — brouillons IA indisponibles.");
   console.log(`Envoi SMTP : ${SMTP_HOST}:${SMTP_PORT} (uniquement les reponses validees dans CDL).`);
+
+  console.log(`Sauvegarde automatique : le dimanche vers 20h (heure fr.) par mail a ${SAUVEGARDE_DEST}.`);
 
   const boucle = async () => {
     try {
@@ -599,9 +862,11 @@ async function cycle() {
       console.log("Erreur cycle :", e.message, "— nouvel essai au prochain cycle.");
       if (e.responseText) console.log("  Reponse serveur :", e.responseText);
     }
+    await verifierSauvegarde();
   };
 
   await boucle();
   setInterval(boucle, FREQ);
   setInterval(traiterReponses, 30000);
+  setInterval(traiterDemandesDevis, 30000);
 })();
