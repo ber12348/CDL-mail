@@ -810,8 +810,14 @@ async function envoyerDevisParMail(env) {
     if (!/^[\w.+-]+@[\w-]+\.[\w.-]+$/.test(dest)) throw new Error("adresse destinataire invalide : " + dest);
     if (!don.corps || !don.corps.trim()) throw new Error("message vide");
     const echap = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    /* Dans la version HTML, le lien du devis s'affiche « Voir votre document »
+       au lieu de l'adresse brute (qui reste dans la version texte). */
     const html = '<div style="font-family:Georgia,serif;font-size:15px;line-height:1.6;color:#3d3a35;white-space:pre-wrap">'
-      + echap(don.corps).replace(/(https?:\/\/[^\s]+)/g, '<a href="$1">$1</a>') + "</div>";
+      + echap(don.corps).replace(/(https?:\/\/[^\s]+)/g, (url) =>
+        url.indexOf("/devis/?c=") >= 0
+          ? '<a href="' + url + '" style="color:#A0813C;font-weight:600">Voir votre document</a>'
+          : '<a href="' + url + '">' + url + "</a>")
+      + "</div>";
     await smtp.sendMail({
       from: `"${EXPEDITEUR_NOM}" <${process.env.MAIL_UTILISATEUR}>`,
       to: dest,
