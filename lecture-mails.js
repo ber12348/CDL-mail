@@ -1,7 +1,8 @@
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v8.3  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v8.4  ·  LECTURE SEULE (IMAP)
    (v8.2 : un devis mariage est TOUJOURS recale du vendredi 14 h au dimanche 18 h ;
-    v8.3 : mode « ajuster un devis existant » + envoi des devis par mail, file envois_mails)
+    v8.3 : mode « ajuster un devis existant » + envoi des devis par mail, file envois_mails ;
+    v8.4 : redaction des posts reseaux, file posts_reseaux, onglet Reseaux de CDL)
    ------------------------------------------------------------
    Nouveau en v8 :
      • fabrique de devis : surveille la table "demandes_devis"
@@ -83,7 +84,7 @@ const JOUR_SAUVEGARDE = parseInt(process.env.SAUVEGARDE_JOUR || "0", 10); // 0 =
 const TABLES_SAUVEGARDE = ["mails", "mails_etat", "dossiers", "reponses", "depenses",
   "trajets", "plannings", "equipe", "mois_arretes", "dossier_pieces", "taches",
   "besoins", "journal", "fiches_perso", "rondes_en_cours", "horaires_defaut",
-  "evenements", "espaces", "articles", "devis", "reglages", "maries_acces", "demandes_devis", "envois_mails"];
+  "evenements", "espaces", "articles", "devis", "reglages", "maries_acces", "demandes_devis", "envois_mails", "posts_reseaux"];
 
 async function toutLire(table) {
   const lignes = [];
@@ -148,10 +149,12 @@ let colonneMessageIdOK = false;
 let bucketOK = false;
 let tableDemandesOK = false;
 let tableEnvoisOK = false;
+let tablePostsOK = false;
 let avertissementReponses = false;
 let avertissementBucket = false;
 let avertissementDemandes = false;
 let avertissementEnvois = false;
+let avertissementPosts = false;
 
 async function verifierExtensionsV5() {
   if (!bucketOK) {
@@ -196,6 +199,16 @@ async function verifierExtensionsV5() {
     } else if (!avertissementEnvois) {
       avertissementEnvois = true;
       console.log("Envoi de devis : table 'envois_mails' absente — en veille (passer le SQL pour l'activer).");
+    }
+  }
+  if (!tablePostsOK) {
+    const { error } = await supabase.from("posts_reseaux").select("id").limit(1);
+    if (!error) {
+      tablePostsOK = true;
+      console.log("Reseaux : table 'posts_reseaux' trouvee, redaction des posts active.");
+    } else if (!avertissementPosts) {
+      avertissementPosts = true;
+      console.log("Reseaux : table 'posts_reseaux' absente — en veille (passer le SQL pour l'activer).");
     }
   }
 }
@@ -867,6 +880,67 @@ async function traiterEnvoisMails() {
   }
 }
 
+/* ---------- Redaction des posts reseaux (onglet Reseaux de CDL) ---------- */
+let postsEnCours = false;
+
+const LIGNE_EDITORIALE = `Tu ecris les publications reseaux sociaux du Domaine de la Cour des Lys,
+lieu de receptions en Normandie (Thue et Mue, a 20 min de Caen) : granges du XVIIe siecle en pierre
+de Caen, cour d'honneur de 1500 m2 avec fontaine, parc de 2,5 hectares, 800 m2 de salles modulables,
+82 couchages, privatisation EXCLUSIVE (jamais de groupes croises), accompagnement par Helene
+(interlocutrice unique), aucun prestataire impose. Signature de la maison :
+« Laissez-vous porter par l'Histoire du lieu, ecrivez la Votre. »
+Ton : luxe sobre, chaleureux, narratif, JAMAIS vendeur agressif.
+Selon le reseau :
+- instagram : emotion mariage, phrases courtes et sensorielles, 1 emoji sobre maximum par paragraphe,
+  finir par une adresse douce (« Il reste quelques week-ends en 2027 — ecrivez-nous ») puis 8 a 10 hashtags
+  (#mariagenormandie #chateaumariage #mariagecalvados #domainedelacourdeslys + specifiques a la photo) ;
+- linkedin : destine aux entreprises (seminaires, journees de cohesion, soirees), chiffres concrets,
+  0 a 3 hashtags, appel a contact direct (contact@domainedelacourdeslys.com) ;
+- google : 150 a 300 caracteres, mots-cles locaux naturels (mariage Caen, seminaire Calvados, Normandie),
+  finir par une invitation a contacter.
+Regles imperatives : n'invente JAMAIS un fait, un prix, un nom ou une date ; pas de visage nomme ;
+reponds UNIQUEMENT avec le texte du post, sans commentaire autour.`;
+
+async function redigerPost(row) {
+  const don = row.donnees || {};
+  try {
+    const message = `Reseau : ${don.reseau || "instagram"}
+Date de publication prevue : ${don.date || "(libre)"}
+Consigne de l'equipe : ${don.consigne || "(aucune — texte au gout de la maison)"}
+${don.texte ? `Texte actuel a retravailler :\n${don.texte}` : "(pas encore de texte : redige-le)"}
+La photo jointe est decrite par son nom de fichier : ${don.chemin || "?"}`;
+    const texte = await appelerClaude(MODELE_REDACTION, LIGNE_EDITORIALE, message, 800);
+    if (!texte) throw new Error("reponse vide de l'assistant");
+    await supabase.from("posts_reseaux").update({
+      donnees: { ...don, texte, statut: "brouillon", note: "Rédigé par l'assistant — relisez avant de publier." },
+      modifie_le: new Date().toISOString(),
+    }).eq("id", row.id);
+    console.log(`Post ${don.reseau || "?"} redige (${row.id}).`);
+  } catch (e) {
+    console.log("  ! Redaction post :", e.message);
+    try {
+      await supabase.from("posts_reseaux").update({
+        donnees: { ...don, statut: "brouillon", note: "L'assistant n'a pas réussi : " + e.message },
+        modifie_le: new Date().toISOString(),
+      }).eq("id", row.id);
+    } catch (e2) { /* prochain cycle */ }
+  }
+}
+
+async function traiterPostsReseaux() {
+  if (!tablePostsOK || postsEnCours || !CLE_IA) return;
+  postsEnCours = true;
+  try {
+    const { data } = await supabase.from("posts_reseaux").select("*").limit(50);
+    const attente = (data || []).filter((x) => (x.donnees || {}).statut === "a_rediger");
+    for (const row of attente) await redigerPost(row);
+  } catch (e) {
+    console.log("  ! Posts reseaux :", e.message);
+  } finally {
+    postsEnCours = false;
+  }
+}
+
 /* ---------- Un cycle de lecture ---------- */
 async function cycle() {
   await verifierExtensionsV5();
@@ -978,7 +1052,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v8.3 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v8.4 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
@@ -1003,4 +1077,5 @@ async function cycle() {
   setInterval(traiterReponses, 30000);
   setInterval(traiterDemandesDevis, 30000);
   setInterval(traiterEnvoisMails, 30000);
+  setInterval(traiterPostsReseaux, 30000);
 })();
