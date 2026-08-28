@@ -1,5 +1,9 @@
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v8.5  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v8.7  ·  LECTURE SEULE (IMAP)
+   (v8.6 : classement affine — mots de passe/promos hors Compta, demandes de devis en prospect —
+    et mails tout-HTML rendus lisibles ;
+    v8.7 : les documents reconnus — attestation d'assurance, rooming, fiche mobilier,
+    devis signe — cochent automatiquement la fiche de l'evenement)
    (v8.2 : un devis mariage est TOUJOURS recale du vendredi 14 h au dimanche 18 h ;
     v8.3 : mode « ajuster un devis existant » + envoi des devis par mail, file envois_mails ;
     v8.4 : redaction des posts reseaux, file posts_reseaux, onglet Reseaux de CDL ;
@@ -249,6 +253,71 @@ async function chargerAnnuaire() {
   }
   ANNUAIRE = map;
   console.log(`Annuaire charge : ${ANNUAIRE.size} adresses connues${ecartes ? ` (${ecartes} adresse(s) generique(s) ecartee(s))` : ""}.`);
+}
+
+/* ---------- Fiches événements : reconnaissance des documents reçus ----------
+   Quand un client identifié envoie une pièce jointe reconnaissable (attestation
+   d'assurance, rooming list, fiche mobilier, devis signé), la case correspondante
+   de sa fiche est cochée automatiquement. On ne décoche JAMAIS. */
+let EVTS_PAR_EMAIL = new Map();
+
+async function chargerEvenements() {
+  const { data, error } = await supabase.from("evenements").select("id, donnees").limit(2000);
+  if (error) { console.log("  ! Fiches evenements indisponibles :", error.message); return; }
+  const map = new Map();
+  for (const l of data || []) {
+    const d = l.donnees || {};
+    if (d.statut === "annule" || d.statut === "bloque") continue;
+    const adresses = [d.email].concat((d.maries || []).map((m) => m && m.email))
+      .map((a) => (a || "").trim().toLowerCase()).filter(Boolean);
+    for (const a of adresses) {
+      const actuel = map.get(a);
+      if (!actuel || (d.dateDebut || "") > ((actuel.donnees || {}).dateDebut || "")) map.set(a, l);
+    }
+  }
+  EVTS_PAR_EMAIL = map;
+}
+
+function reconnaitreDocuments(objet, corps, nomsPieces) {
+  const texte = ((objet || "") + " " + (corps || "")).toLowerCase();
+  const noms = nomsPieces.join(" ").toLowerCase();
+  const tout = noms + " " + texte;
+  if (!nomsPieces.length) return [];
+  const docs = [];
+  if (/attestation|assurance|responsabilite civile|responsabilité civile|villegiature|villégiature/.test(tout)) docs.push("assurance");
+  if (/rooming/.test(tout)) docs.push("rooming");
+  if (/fiche[ _-]?mobilier|liste[ _-]?mobilier/.test(tout)) docs.push("mobilier");
+  if (/devis[\s\S]{0,40}sign|sign[\s\S]{0,30}devis/.test(tout) || (/dev-\d{4}-\d+/.test(noms) && /sign/.test(tout))) docs.push("devisSigne");
+  return docs;
+}
+
+async function cocherDocumentsFiche(mail, nomsPieces) {
+  const ligne = EVTS_PAR_EMAIL.get((mail.expediteur_email || "").toLowerCase());
+  if (!ligne) return null;
+  const reconnus = reconnaitreDocuments(mail.objet, mail.corps, nomsPieces);
+  if (!reconnus.length) return null;
+  const LIBS = { assurance: "attestation d'assurance", rooming: "rooming list", mobilier: "fiche mobilier", devisSigne: "devis signé" };
+  const d = { ...ligne.donnees };
+  const jour = new Date().toISOString().slice(0, 10);
+  const faits = [];
+  for (const r of reconnus) {
+    if (r === "devisSigne") {
+      if (!d.devisSigneRecu) { d.devisSigneRecu = true; d.devisSigneDate = jour; faits.push(LIBS[r]); }
+    } else {
+      d.documents = { ...(d.documents || {}) };
+      if (!(d.documents[r] && d.documents[r].recu)) {
+        d.documents[r] = { ...(d.documents[r] || {}), recu: true, date: jour, source: "mail" };
+        faits.push(LIBS[r]);
+      }
+    }
+  }
+  if (!faits.length) return null;
+  const { error } = await supabase.from("evenements")
+    .update({ donnees: d, modifie_le: new Date().toISOString() }).eq("id", ligne.id);
+  if (error) { console.log("  ! Coche fiche impossible :", error.message); return null; }
+  ligne.donnees = d;
+  console.log(`  + Fiche ${d.client || ligne.id} : ${faits.join(", ")} coche(s) automatiquement.`);
+  return faits;
 }
 
 /* ---------- Plateformes d'apport d'affaires ---------- */
@@ -518,7 +587,7 @@ function classer(mail) {
     "cloudflare", "ovh.com", "ovh.net", "anthropic", "claude.ai", "mammotion",
     "3douest", "apple.com", "google.com", "microsoft", "3cx", "search-console",
     "wordpress", "wix.com", "squarespace"];
-  const CODES = /code de verification|verification code|2fa|double authentification|reinitialisation|password reset|verify your device|connexion detectee|message vocal|appel manque|memory limit|deploy/;
+  const CODES = /code de verification|verification code|2fa|double authentification|reinitialisation|password reset|verify your device|connexion detectee|message vocal|appel manque|memory limit|deploy|mot de passe|password|securite de votre compte|sécurité de votre compte|verifier votre identite|vérifier votre identité/;
   // v6 : les codes/notifications ne sont cherches que dans l'objet — un mail
   // de client qui *cite* un mot technique dans son texte n'est plus happe ici
   if (OUTILS.some((m) => de.includes(m)) || CODES.test(objet)) {
@@ -530,7 +599,7 @@ function classer(mail) {
   const DEMARCHAGE_DE = ["sistrix", "dolcevita", "dolce-vita", "le-guide",
     "guerveur", "guinguette", "athezza", "mjt.lu", "mailjet", "sendinblue",
     "brevo", "studio-jfg", "monatelier", "romantictourist", "qweeby"];
-  const DEMARCHAGE_TXT = /se desinscrire|desinscription|unsubscribe|votre visibilite|referencement|newsletter|webinar|nous serions ravis de|offre speciale|decouvrez notre|augmentez vos reservations|mettre en images vos/;
+  const DEMARCHAGE_TXT = /se desinscrire|desinscription|unsubscribe|votre visibilite|referencement|newsletter|webinar|nous serions ravis de|offre speciale|decouvrez notre|augmentez vos reservations|mettre en images vos|economisez|économisez|remises sur quantit|offre exclusive|ventes flash|promotions du/;
   if (DEMARCHAGE_DE.some((m) => de.includes(m) || nomDe.includes(m)) || DEMARCHAGE_TXT.test(tout)) {
     return { categorie: "demarchage", dossier: null,
       analyse: "Sollicitation commerciale externe — sans suite" };
@@ -559,7 +628,7 @@ function classer(mail) {
     "ca-normandie", "banque", "urssaf", "impots.gouv", "dgfip", "amazon.fr",
     "amazon.com", "sage", "cegid", "pennylane", "qonto", "stripe", "anett"];
   if (COMPTA_DE.some((m) => de.includes(m) || nomDe.includes(m))) {
-    if (/votre evenement|votre événement|votre mariage|votre seminaire|votre séminaire|devis pour votre|au domaine de la cour des lys/.test(tout)) {
+    if (/votre evenement|votre événement|votre mariage|votre seminaire|votre séminaire|devis pour votre|au domaine de la cour des lys|demande de devis|salle de mariage|salle de seminaire|salle de séminaire/.test(tout)) {
       return { categorie: "prospect", dossier: "A rattacher",
         analyse: "Expediteur type banque mais le mail parle d'un evenement chez nous — a rattacher" };
     }
@@ -567,8 +636,10 @@ function classer(mail) {
       analyse: "Piece comptable (banque, tresor public ou fournisseur)" };
   }
 
-  /* 6. COMPTA par contenu — sans le mot "avoir" */
-  if (/factur|releve bancaire|virement|prelevement|echeance de paiement|taxe de sejour|urssaf|impot|tva|comptabilit|declaration fiscale|ticket de paiement|note de frais|devis n°|avis de paiement/.test(tout)) {
+  /* 6. COMPTA par contenu — sans le mot "avoir", et jamais si c'est une
+        demande entrante (devis, salle) qui parle par hasard d'argent */
+  if (!/demande de devis|salle de mariage|salle de seminaire|salle de séminaire|demande de renseignement/.test(tout)
+    && /factur|releve bancaire|virement|prelevement|echeance de paiement|taxe de sejour|urssaf|impot|tva|comptabilit|declaration fiscale|ticket de paiement|note de frais|devis n°|avis de paiement/.test(tout)) {
     return { categorie: "compta", dossier: "Compta",
       analyse: "Piece comptable ou taxe — a rapprocher de l'exercice" };
   }
@@ -580,7 +651,7 @@ function classer(mail) {
   }
 
   /* 8. Demande entrante */
-  if (/demande d'information|demande d'info|demande de renseignement|disponibilit|votre tarif|vos tarifs|visite|brochure|formulaire de demande|nouvelle demande/.test(tout)) {
+  if (/demande d'information|demande d'info|demande de renseignement|demande de devis|salle de mariage|salle de seminaire|salle de séminaire|disponibilit|votre tarif|vos tarifs|visite|brochure|formulaire de demande|nouvelle demande/.test(tout)) {
     return { categorie: "prospect", dossier: "Nouvelle demande",
       analyse: "Demande entrante (renseignements, disponibilites, tarifs)" };
   }
@@ -947,6 +1018,7 @@ async function traiterPostsReseaux() {
 async function cycle() {
   await verifierExtensionsV5();
   await chargerAnnuaire();
+  await chargerEvenements();
 
   const client = new ImapFlow({
     host: process.env.IMAP_HOST,
@@ -976,7 +1048,18 @@ async function cycle() {
       const parsed = await simpleParser(msg.source);
       const from = (parsed.from && parsed.from.value && parsed.from.value[0]) || {};
 
-      const corps = (parsed.text || "").trim();
+      /* v8.6 : les mails « tout HTML » deviennent lisibles (balises retirées). */
+      let corps = (parsed.text || "").trim();
+      if ((!corps || /^<!doctype|^<html/i.test(corps)) && (parsed.html || corps)) {
+        corps = String(parsed.html || corps)
+          .replace(/<style[\s\S]*?<\/style>/gi, " ")
+          .replace(/<script[\s\S]*?<\/script>/gi, " ")
+          .replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+          .replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&eacute;/g, "é").replace(/&egrave;/g, "è").replace(/&agrave;/g, "à")
+          .replace(/[ \t]+/g, " ").replace(/\n\s*\n\s*\n+/g, "\n\n").trim();
+      }
       const pieces = [];
       for (const a of parsed.attachments || []) {
         if (!a.filename) continue;
@@ -1023,6 +1106,12 @@ async function cycle() {
         mail.analyse += ` · ${pieces.length} piece(s) jointe(s) : ${pieces.map((p) => p.nom).join(", ")}`;
       }
 
+      /* v8.7 : un document reconnu coche la fiche de l'evenement tout seul. */
+      try {
+        const coches = await cocherDocumentsFiche(mail, pieces.map((p) => p.nom || ""));
+        if (coches && coches.length) mail.analyse += ` · coché dans la fiche : ${coches.join(", ")}`;
+      } catch (e) { /* la coche ne doit jamais bloquer la lecture */ }
+
       const { error } = await supabase
         .from("mails").upsert(mail, { onConflict: "uid_imap" });
 
@@ -1054,7 +1143,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v8.5 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v8.7 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
