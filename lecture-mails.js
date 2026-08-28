@@ -1,5 +1,6 @@
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v8.7  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v8.8  ·  LECTURE SEULE (IMAP)
+   (v8.8 : un mariage CONFIRME recoit automatiquement son code espace maries — jamais les options)
    (v8.6 : classement affine — mots de passe/promos hors Compta, demandes de devis en prospect —
     et mails tout-HTML rendus lisibles ;
     v8.7 : les documents reconnus — attestation d'assurance, rooming, fiche mobilier,
@@ -318,6 +319,29 @@ async function cocherDocumentsFiche(mail, nomsPieces) {
   ligne.donnees = d;
   console.log(`  + Fiche ${d.client || ligne.id} : ${faits.join(", ")} coche(s) automatiquement.`);
   return faits;
+}
+
+/* ---------- Espace maries : attribution automatique des codes ----------
+   Regle maison (28/08/2026) : un code par mariage CONFIRME uniquement —
+   pas pour les options. Le code apparait dans la fiche du couple ; on ne
+   regenere jamais un code existant. */
+async function attribuerCodesMaries() {
+  const { data, error } = await supabase.from("evenements").select("id, donnees").limit(2000);
+  if (error) return;
+  const slug = (s) => String(s || "maries").toLowerCase().normalize("NFD")
+    .split("").filter((c) => c.charCodeAt(0) < 0x300 || c.charCodeAt(0) > 0x36f).join("")
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  for (const e of data || []) {
+    const d = e.donnees || {};
+    if (d.categorie !== "mariage" || d.statut !== "confirme" || d.codeMaries) continue;
+    const code = slug(d.client) + "-" + Math.random().toString(36).slice(2, 6);
+    const ins = await supabase.from("maries_acces").insert({ code, evenement_id: e.id });
+    if (ins.error) { console.log("  ! Code maries refuse :", ins.error.message); continue; }
+    await supabase.from("evenements")
+      .update({ donnees: { ...d, codeMaries: code }, modifie_le: new Date().toISOString() })
+      .eq("id", e.id);
+    console.log(`  + Espace maries ouvert pour ${d.client || e.id} : ${code}`);
+  }
 }
 
 /* ---------- Plateformes d'apport d'affaires ---------- */
@@ -1019,6 +1043,7 @@ async function cycle() {
   await verifierExtensionsV5();
   await chargerAnnuaire();
   await chargerEvenements();
+  await attribuerCodesMaries();
 
   const client = new ImapFlow({
     host: process.env.IMAP_HOST,
@@ -1143,7 +1168,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v8.7 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v8.8 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
