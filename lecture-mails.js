@@ -1,8 +1,11 @@
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v8.9  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v8.10  ·  LECTURE SEULE (IMAP)
+   (v8.10 : LA vraie cause de la panne du 28/08 — les files posts/demandes/envois
+    ne lisaient que les 50 ou 20 premieres lignes de leur table ; des que la
+    phototheque a depasse 50 lignes, les posts a rediger devenaient invisibles.
+    Desormais c'est la base qui filtre par statut.)
    (v8.9 : plus de blocage silencieux — l'appel a l'assistant IA est limite a 90 s,
-    et un verrou oublie par un appel suspendu saute tout seul apres 10 min.
-    Corrige la panne du 28/08 : posts reseaux restes en « l'assistant redige... »)
+    et un verrou oublie par un appel suspendu saute tout seul apres 10 min)
    (v8.8 : un mariage CONFIRME recoit automatiquement son code espace maries — jamais les options)
    (v8.6 : classement affine — mots de passe/promos hors Compta, demandes de devis en prospect —
     et mails tout-HTML rendus lisibles ;
@@ -913,8 +916,9 @@ async function traiterDemandesDevis() {
   if (!tableDemandesOK || verrouPose(demandesEnCours) || !CLE_IA) return;
   demandesEnCours = Date.now();
   try {
-    const { data } = await supabase.from("demandes_devis").select("*").limit(20);
-    const attente = (data || []).filter((x) => (x.donnees || {}).statut === "en_attente");
+    const { data } = await supabase.from("demandes_devis").select("*")
+      .eq("donnees->>statut", "en_attente").limit(20);
+    const attente = data || [];
     for (const dem of attente) await fabriquerDevis(dem);
   } catch (e) {
     console.log("  ! Demandes de devis :", e.message);
@@ -980,8 +984,9 @@ async function traiterEnvoisMails() {
   if (!tableEnvoisOK || verrouPose(envoisDevisEnCours)) return;
   envoisDevisEnCours = Date.now();
   try {
-    const { data } = await supabase.from("envois_mails").select("*").limit(20);
-    const attente = (data || []).filter((x) => (x.donnees || {}).statut === "en_attente");
+    const { data } = await supabase.from("envois_mails").select("*")
+      .eq("donnees->>statut", "en_attente").limit(20);
+    const attente = data || [];
     for (const env of attente) await envoyerDevisParMail(env);
   } catch (e) {
     console.log("  ! Envois de devis :", e.message);
@@ -1041,8 +1046,11 @@ async function traiterPostsReseaux() {
   if (!tablePostsOK || verrouPose(postsEnCours) || !CLE_IA) return;
   postsEnCours = Date.now();
   try {
-    const { data } = await supabase.from("posts_reseaux").select("*").limit(50);
-    const attente = (data || []).filter((x) => (x.donnees || {}).statut === "a_rediger");
+    /* v8.10 : c'est la base qui filtre — avec .limit(50) seul, les posts a rediger
+       devenaient invisibles des que photos + posts depassaient 50 lignes (panne du 28/08). */
+    const { data } = await supabase.from("posts_reseaux").select("*")
+      .eq("donnees->>statut", "a_rediger").limit(20);
+    const attente = data || [];
     for (const row of attente) await redigerPost(row);
   } catch (e) {
     console.log("  ! Posts reseaux :", e.message);
@@ -1181,7 +1189,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v8.9 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v8.10 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
@@ -1208,4 +1216,3 @@ async function cycle() {
   setInterval(traiterEnvoisMails, 30000);
   setInterval(traiterPostsReseaux, 30000);
 })();
-
