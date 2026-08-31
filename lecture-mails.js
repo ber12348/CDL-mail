@@ -1,68 +1,68 @@
 /* ============================================================
-   CDL â€” Lecteur de boite mail  Â·  v8.9  Â·  LECTURE SEULE (IMAP)
-   (v8.9 : plus de blocage silencieux â€” l'appel a l'assistant IA est limite a 90 s,
+   CDL — Lecteur de boite mail  ·  v8.9  ·  LECTURE SEULE (IMAP)
+   (v8.9 : plus de blocage silencieux — l'appel a l'assistant IA est limite a 90 s,
     et un verrou oublie par un appel suspendu saute tout seul apres 10 min.
-    Corrige la panne du 28/08 : posts reseaux restes en Â« l'assistant redige... Â»)
-   (v8.8 : un mariage CONFIRME recoit automatiquement son code espace maries â€” jamais les options)
-   (v8.6 : classement affine â€” mots de passe/promos hors Compta, demandes de devis en prospect â€”
+    Corrige la panne du 28/08 : posts reseaux restes en « l'assistant redige... »)
+   (v8.8 : un mariage CONFIRME recoit automatiquement son code espace maries — jamais les options)
+   (v8.6 : classement affine — mots de passe/promos hors Compta, demandes de devis en prospect —
     et mails tout-HTML rendus lisibles ;
-    v8.7 : les documents reconnus â€” attestation d'assurance, rooming, fiche mobilier,
-    devis signe â€” cochent automatiquement la fiche de l'evenement)
+    v8.7 : les documents reconnus — attestation d'assurance, rooming, fiche mobilier,
+    devis signe — cochent automatiquement la fiche de l'evenement)
    (v8.2 : un devis mariage est TOUJOURS recale du vendredi 14 h au dimanche 18 h ;
-    v8.3 : mode Â« ajuster un devis existant Â» + envoi des devis par mail, file envois_mails ;
+    v8.3 : mode « ajuster un devis existant » + envoi des devis par mail, file envois_mails ;
     v8.4 : redaction des posts reseaux, file posts_reseaux, onglet Reseaux de CDL ;
     v8.5 : les notes du premier contact de la fiche nourrissent le devis de l'assistant)
    ------------------------------------------------------------
    Nouveau en v8 :
-     â€¢ fabrique de devis : surveille la table "demandes_devis"
-       (bouton Â« Demander Ã  l'assistant Â» dans CDL, onglet Finance).
+     • fabrique de devis : surveille la table "demandes_devis"
+       (bouton « Demander à l'assistant » dans CDL, onglet Finance).
        Claude monte le devis depuis la bibliotheque d'articles
        (jamais de prix inventes pour un article du catalogue) et le
        range en BROUILLON dans la table "devis". RIEN ne part au
        client : l'equipe relit, imprime et envoie elle-meme.
-     â€¢ la sauvegarde hebdomadaire couvre aussi les tables du
+     • la sauvegarde hebdomadaire couvre aussi les tables du
        planning et des devis (evenements, espaces, articles, devis,
        reglages, maries_acces, demandes_devis).
-     â€¢ si la table "demandes_devis" n'existe pas encore, tout
+     • si la table "demandes_devis" n'existe pas encore, tout
        fonctionne comme en v7 (verification a chaque cycle).
    Nouveau en v7 :
-     â€¢ sauvegarde automatique : chaque dimanche soir (ou des que
+     • sauvegarde automatique : chaque dimanche soir (ou des que
        la derniere sauvegarde a plus de 8 jours), le lecteur
        exporte TOUTES les tables (CDL + Ready) en un fichier JSON
        et se l'envoie par mail a la boite du Domaine. La copie de
        secours vit ainsi chez OVH, hors de Supabase.
-     â€¢ premier export envoye immediatement au premier demarrage.
-     â€¢ jalon de sauvegarde memorise dans mails_etat (ligne id=2),
+     • premier export envoye immediatement au premier demarrage.
+     • jalon de sauvegarde memorise dans mails_etat (ligne id=2),
        sans aucune modification de schema.
    Nouveau en v6 :
-     â€¢ les pieces jointes sont rangees dans Supabase Storage
+     • les pieces jointes sont rangees dans Supabase Storage
        (coffre "pieces") et deviennent ouvrables depuis CDL.
        Au-dela de 15 Mo, seul le nom est garde, comme avant.
-     â€¢ classement : l'annuaire des dossiers est consulte AVANT
+     • classement : l'annuaire des dossiers est consulte AVANT
        la regle "compta par expediteur" (une cliente ecrivant
        depuis sa banque n'est plus prise pour une facture), et
        les codes/notifications ne sont plus detectes que dans
        l'objet du mail (moins de faux "technique").
-     â€¢ si le coffre "pieces" n'existe pas encore, tout fonctionne
+     • si le coffre "pieces" n'existe pas encore, tout fonctionne
        comme en v5 (verification a chaque cycle).
    Nouveau en v5 :
-     â€¢ repond aux mails depuis CDL : surveille la table "reponses"
+     • repond aux mails depuis CDL : surveille la table "reponses"
        (Supabase). Quand l'equipe demande un brouillon, Claude le
        redige ; quand l'equipe valide, l'envoi part par SMTP OVH.
        RIEN ne part sans validation humaine dans l'interface.
-     â€¢ la boite reste en LECTURE SEULE cote IMAP : l'envoi passe
+     • la boite reste en LECTURE SEULE cote IMAP : l'envoi passe
        par SMTP, un canal separe qui ne touche pas aux mails recus.
-     â€¢ le Message-ID des nouveaux mails est memorise (colonne
+     • le Message-ID des nouveaux mails est memorise (colonne
        message_id) pour que les reponses s'attachent au bon fil.
-     â€¢ si la table "reponses" ou la colonne "message_id" n'existent
+     • si la table "reponses" ou la colonne "message_id" n'existent
        pas encore, tout fonctionne comme en v4 (verification a
        chaque cycle : passer le SQL suffit, sans redeployer).
    Nouveau en v4 :
-     â€¢ quand les regles ne reconnaissent rien, le mail est soumis
+     • quand les regles ne reconnaissent rien, le mail est soumis
        a Claude (Haiku) qui lit le message et propose un classement
-     â€¢ les regles restent prioritaires : l'IA n'est appelee que
+     • les regles restent prioritaires : l'IA n'est appelee que
        sur les mails qui finiraient en "a classer" (peu d'appels)
-     â€¢ si la cle ANTHROPIC_API_KEY est absente, tout fonctionne
+     • si la cle ANTHROPIC_API_KEY est absente, tout fonctionne
        exactement comme en v3.2
    Ne supprime, ne deplace et ne modifie JAMAIS un mail recu.
    ============================================================ */
@@ -121,7 +121,7 @@ async function sauvegarder() {
   await smtp.sendMail({
     from: `"${EXPEDITEUR_NOM}" <${process.env.MAIL_UTILISATEUR}>`,
     to: SAUVEGARDE_DEST,
-    subject: `CDL â€” Sauvegarde des donnees (${jour})`,
+    subject: `CDL — Sauvegarde des donnees (${jour})`,
     text: `Sauvegarde automatique de la base CDL/Ready, generee par le lecteur.\n\n${resume.join("\n")}\n\nCe fichier permet de tout restaurer si la base venait a disparaitre.\nConservez ce mail : il constitue votre copie de secours hors Supabase.`,
     attachments: [{ filename: `sauvegarde-cdl-${jour}.json`, content: json }],
   });
@@ -147,7 +147,7 @@ async function verifierSauvegarde() {
     const cEstLHeure = maintenant.getDay() === JOUR_SAUVEGARDE && maintenant.getHours() >= 18 && ageJours >= 1;
     if (ageJours >= 8 || cEstLHeure) await sauvegarder();
   } catch (e) {
-    console.log("  ! Sauvegarde :", e.message, "â€” nouvel essai au prochain cycle.");
+    console.log("  ! Sauvegarde :", e.message, "— nouvel essai au prochain cycle.");
   } finally {
     sauvegardeEnCours = 0;
   }
@@ -178,7 +178,7 @@ async function verifierExtensionsV5() {
       console.log(`Pieces jointes : coffre '${BUCKET}' trouve, rangement actif.`);
     } else if (!avertissementBucket) {
       avertissementBucket = true;
-      console.log(`Pieces jointes : coffre '${BUCKET}' absent â€” seuls les noms sont gardes (passer le SQL pour l'activer).`);
+      console.log(`Pieces jointes : coffre '${BUCKET}' absent — seuls les noms sont gardes (passer le SQL pour l'activer).`);
     }
   }
   if (!tableReponsesOK) {
@@ -188,7 +188,7 @@ async function verifierExtensionsV5() {
       console.log("Reponses depuis CDL : table 'reponses' trouvee, envoi active.");
     } else if (!avertissementReponses) {
       avertissementReponses = true;
-      console.log("Reponses depuis CDL : table 'reponses' absente â€” fonction en veille (passer le SQL pour l'activer).");
+      console.log("Reponses depuis CDL : table 'reponses' absente — fonction en veille (passer le SQL pour l'activer).");
     }
   }
   if (!colonneMessageIdOK) {
@@ -202,7 +202,7 @@ async function verifierExtensionsV5() {
       console.log("Fabrique de devis : table 'demandes_devis' trouvee, assistant actif.");
     } else if (!avertissementDemandes) {
       avertissementDemandes = true;
-      console.log("Fabrique de devis : table 'demandes_devis' absente â€” en veille (passer le SQL pour l'activer).");
+      console.log("Fabrique de devis : table 'demandes_devis' absente — en veille (passer le SQL pour l'activer).");
     }
   }
   if (!tableEnvoisOK) {
@@ -212,7 +212,7 @@ async function verifierExtensionsV5() {
       console.log("Envoi de devis : table 'envois_mails' trouvee, envoi par mail actif.");
     } else if (!avertissementEnvois) {
       avertissementEnvois = true;
-      console.log("Envoi de devis : table 'envois_mails' absente â€” en veille (passer le SQL pour l'activer).");
+      console.log("Envoi de devis : table 'envois_mails' absente — en veille (passer le SQL pour l'activer).");
     }
   }
   if (!tablePostsOK) {
@@ -222,7 +222,7 @@ async function verifierExtensionsV5() {
       console.log("Reseaux : table 'posts_reseaux' trouvee, redaction des posts active.");
     } else if (!avertissementPosts) {
       avertissementPosts = true;
-      console.log("Reseaux : table 'posts_reseaux' absente â€” en veille (passer le SQL pour l'activer).");
+      console.log("Reseaux : table 'posts_reseaux' absente — en veille (passer le SQL pour l'activer).");
     }
   }
 }
@@ -264,10 +264,10 @@ async function chargerAnnuaire() {
   console.log(`Annuaire charge : ${ANNUAIRE.size} adresses connues${ecartes ? ` (${ecartes} adresse(s) generique(s) ecartee(s))` : ""}.`);
 }
 
-/* ---------- Fiches Ã©vÃ©nements : reconnaissance des documents reÃ§us ----------
-   Quand un client identifiÃ© envoie une piÃ¨ce jointe reconnaissable (attestation
-   d'assurance, rooming list, fiche mobilier, devis signÃ©), la case correspondante
-   de sa fiche est cochÃ©e automatiquement. On ne dÃ©coche JAMAIS. */
+/* ---------- Fiches événements : reconnaissance des documents reçus ----------
+   Quand un client identifié envoie une pièce jointe reconnaissable (attestation
+   d'assurance, rooming list, fiche mobilier, devis signé), la case correspondante
+   de sa fiche est cochée automatiquement. On ne décoche JAMAIS. */
 let EVTS_PAR_EMAIL = new Map();
 
 async function chargerEvenements() {
@@ -293,7 +293,7 @@ function reconnaitreDocuments(objet, corps, nomsPieces) {
   const tout = noms + " " + texte;
   if (!nomsPieces.length) return [];
   const docs = [];
-  if (/attestation|assurance|responsabilite civile|responsabilitÃ© civile|villegiature|villÃ©giature/.test(tout)) docs.push("assurance");
+  if (/attestation|assurance|responsabilite civile|responsabilité civile|villegiature|villégiature/.test(tout)) docs.push("assurance");
   if (/rooming/.test(tout)) docs.push("rooming");
   if (/fiche[ _-]?mobilier|liste[ _-]?mobilier/.test(tout)) docs.push("mobilier");
   if (/devis[\s\S]{0,40}sign|sign[\s\S]{0,30}devis/.test(tout) || (/dev-\d{4}-\d+/.test(noms) && /sign/.test(tout))) docs.push("devisSigne");
@@ -305,7 +305,7 @@ async function cocherDocumentsFiche(mail, nomsPieces) {
   if (!ligne) return null;
   const reconnus = reconnaitreDocuments(mail.objet, mail.corps, nomsPieces);
   if (!reconnus.length) return null;
-  const LIBS = { assurance: "attestation d'assurance", rooming: "rooming list", mobilier: "fiche mobilier", devisSigne: "devis signÃ©" };
+  const LIBS = { assurance: "attestation d'assurance", rooming: "rooming list", mobilier: "fiche mobilier", devisSigne: "devis signé" };
   const d = { ...ligne.donnees };
   const jour = new Date().toISOString().slice(0, 10);
   const faits = [];
@@ -330,7 +330,7 @@ async function cocherDocumentsFiche(mail, nomsPieces) {
 }
 
 /* ---------- Espace maries : attribution automatique des codes ----------
-   Regle maison (28/08/2026) : un code par mariage CONFIRME uniquement â€”
+   Regle maison (28/08/2026) : un code par mariage CONFIRME uniquement —
    pas pour les options. Le code apparait dans la fiche du couple ; on ne
    regenere jamais un code existant. */
 async function attribuerCodesMaries() {
@@ -444,7 +444,7 @@ ${(mail.corps || mail.extrait || "(vide)").slice(0, 2000)}`;
       analyse: `${avis.analyse || "Classe par lecture du message"} (IA)`,
     };
   } catch (e) {
-    console.log("  ! IA : ", e.message, "â€” classement par regles conserve.");
+    console.log("  ! IA : ", e.message, "— classement par regles conserve.");
     return null;
   }
 }
@@ -474,7 +474,7 @@ Regles imperatives :
   const message = `Mail recu, auquel il faut repondre :
 Expediteur : ${mail.expediteur || "(inconnu)"} <${mail.expediteur_email || "?"}>
 Objet : ${mail.objet || "(sans objet)"}
-Categorie CDL : ${mail.categorie || "?"} Â· Dossier : ${mail.dossier || "aucun"}${fiche}
+Categorie CDL : ${mail.categorie || "?"} · Dossier : ${mail.dossier || "aucun"}${fiche}
 
 Corps du message :
 ${(mail.corps || mail.extrait || "(vide)").slice(0, 3000)}`;
@@ -589,106 +589,106 @@ function classer(mail) {
 
   const libelle = (d) => {
     const base = d.nom || d.contact || "Dossier";
-    return d.date_debut ? `${base} Â· ${d.date_debut.slice(0, 4)}` : base;
+    return d.date_debut ? `${base} · ${d.date_debut.slice(0, 4)}` : base;
   };
 
   /* 0. Mail envoye par le Domaine lui-meme (copie a soi, accuse) */
   if (de.includes("domainedelacourdeslys")) {
     return { categorie: "technique", dossier: null,
-      analyse: "Message emis par le Domaine â€” copie interne" };
+      analyse: "Message emis par le Domaine — copie interne" };
   }
 
-  /* 1. PLATEFORME d'apport d'affaires â€” traitee en premier :
+  /* 1. PLATEFORME d'apport d'affaires — traitee en premier :
         ce sont des leads, pas des notifications techniques */
   if (PLATEFORMES.some((p) => de.includes(p))) {
     // les vraies newsletters commerciales des plateformes restent du demarchage
     if (/newsletter|check-list|nouveaut|webinar|astuce|conseil du mois|business/.test(objet)) {
       return { categorie: "demarchage", dossier: null,
-        analyse: "Communication commerciale de la plateforme â€” sans suite" };
+        analyse: "Communication commerciale de la plateforme — sans suite" };
     }
     const vraie = adresseDansCorps(mail.corps || mail.extrait);
     const suite = vraie && ANNUAIRE.get(vraie);
     if (suite) {
       return { categorie: suite.statut === "client" ? "client" : "prospect",
         dossier: libelle(suite),
-        analyse: `Via plateforme â€” dossier reconnu (${vraie})` };
+        analyse: `Via plateforme — dossier reconnu (${vraie})` };
     }
     return { categorie: "prospect", dossier: "Nouvelle demande",
       analyse: vraie
-        ? `Nouvelle demande via plateforme â€” contact : ${vraie}`
-        : "Nouvelle demande via plateforme â€” a rattacher a un dossier" };
+        ? `Nouvelle demande via plateforme — contact : ${vraie}`
+        : "Nouvelle demande via plateforme — a rattacher a un dossier" };
   }
 
-  /* 2. TECHNIQUE : outils, notifications, codes â€” avant tout le reste */
+  /* 2. TECHNIQUE : outils, notifications, codes — avant tout le reste */
   const OUTILS = ["render.com", "neon.tech", "supabase", "github", "vercel",
     "cloudflare", "ovh.com", "ovh.net", "anthropic", "claude.ai", "mammotion",
     "3douest", "apple.com", "google.com", "microsoft", "3cx", "search-console",
     "wordpress", "wix.com", "squarespace"];
-  const CODES = /code de verification|verification code|2fa|double authentification|reinitialisation|password reset|verify your device|connexion detectee|message vocal|appel manque|memory limit|deploy|mot de passe|password|securite de votre compte|sÃ©curitÃ© de votre compte|verifier votre identite|vÃ©rifier votre identitÃ©/;
-  // v6 : les codes/notifications ne sont cherches que dans l'objet â€” un mail
+  const CODES = /code de verification|verification code|2fa|double authentification|reinitialisation|password reset|verify your device|connexion detectee|message vocal|appel manque|memory limit|deploy|mot de passe|password|securite de votre compte|sécurité de votre compte|verifier votre identite|vérifier votre identité/;
+  // v6 : les codes/notifications ne sont cherches que dans l'objet — un mail
   // de client qui *cite* un mot technique dans son texte n'est plus happe ici
   if (OUTILS.some((m) => de.includes(m)) || CODES.test(objet)) {
     return { categorie: "technique", dossier: null,
-      analyse: "Notification technique â€” aucune action commerciale" };
+      analyse: "Notification technique — aucune action commerciale" };
   }
 
-  /* 3. DEMARCHAGE : sollicitations commerciales â€” avant les regles metier */
+  /* 3. DEMARCHAGE : sollicitations commerciales — avant les regles metier */
   const DEMARCHAGE_DE = ["sistrix", "dolcevita", "dolce-vita", "le-guide",
     "guerveur", "guinguette", "athezza", "mjt.lu", "mailjet", "sendinblue",
     "brevo", "studio-jfg", "monatelier", "romantictourist", "qweeby"];
-  const DEMARCHAGE_TXT = /se desinscrire|desinscription|unsubscribe|votre visibilite|referencement|newsletter|webinar|nous serions ravis de|offre speciale|decouvrez notre|augmentez vos reservations|mettre en images vos|economisez|Ã©conomisez|remises sur quantit|offre exclusive|ventes flash|promotions du/;
+  const DEMARCHAGE_TXT = /se desinscrire|desinscription|unsubscribe|votre visibilite|referencement|newsletter|webinar|nous serions ravis de|offre speciale|decouvrez notre|augmentez vos reservations|mettre en images vos|economisez|économisez|remises sur quantit|offre exclusive|ventes flash|promotions du/;
   if (DEMARCHAGE_DE.some((m) => de.includes(m) || nomDe.includes(m)) || DEMARCHAGE_TXT.test(tout)) {
     return { categorie: "demarchage", dossier: null,
-      analyse: "Sollicitation commerciale externe â€” sans suite" };
+      analyse: "Sollicitation commerciale externe — sans suite" };
   }
 
-  /* 4. Expediteur connu : la reponse la plus fiable â€” consultee AVANT la
+  /* 4. Expediteur connu : la reponse la plus fiable — consultee AVANT la
         regle compta (v6) : une cliente qui ecrit depuis sa banque ou son
         entreprise reste une cliente, pas une facture */
   const connu = ANNUAIRE.get(de);
   if (connu) {
     if (connu.statut === "client") {
       return { categorie: "client", dossier: libelle(connu),
-        analyse: `Client identifie â€” ${connu.titre_projet || "dossier en cours"}` };
+        analyse: `Client identifie — ${connu.titre_projet || "dossier en cours"}` };
     }
     if (connu.statut === "prospect") {
       return { categorie: "prospect", dossier: libelle(connu),
-        analyse: `Prospect identifie â€” ${connu.titre_projet || "demande en cours"}` };
+        analyse: `Prospect identifie — ${connu.titre_projet || "demande en cours"}` };
     }
     return { categorie: "prospect", dossier: libelle(connu),
-      analyse: "Ancien contact (dossier perdu) qui reecrit â€” piste a requalifier" };
+      analyse: "Ancien contact (dossier perdu) qui reecrit — piste a requalifier" };
   }
 
-  /* 5. COMPTA par expediteur : banques, tresor, organismes â€” mais pas si le
+  /* 5. COMPTA par expediteur : banques, tresor, organismes — mais pas si le
         mail parle manifestement d'un evenement chez nous */
   const COMPTA_DE = ["payfip", "sips-services", "credit-agricole", "creditagricole",
     "ca-normandie", "banque", "urssaf", "impots.gouv", "dgfip", "amazon.fr",
     "amazon.com", "sage", "cegid", "pennylane", "qonto", "stripe", "anett"];
   if (COMPTA_DE.some((m) => de.includes(m) || nomDe.includes(m))) {
-    if (/votre evenement|votre Ã©vÃ©nement|votre mariage|votre seminaire|votre sÃ©minaire|devis pour votre|au domaine de la cour des lys|demande de devis|salle de mariage|salle de seminaire|salle de sÃ©minaire/.test(tout)) {
+    if (/votre evenement|votre événement|votre mariage|votre seminaire|votre séminaire|devis pour votre|au domaine de la cour des lys|demande de devis|salle de mariage|salle de seminaire|salle de séminaire/.test(tout)) {
       return { categorie: "prospect", dossier: "A rattacher",
-        analyse: "Expediteur type banque mais le mail parle d'un evenement chez nous â€” a rattacher" };
+        analyse: "Expediteur type banque mais le mail parle d'un evenement chez nous — a rattacher" };
     }
     return { categorie: "compta", dossier: "Compta",
       analyse: "Piece comptable (banque, tresor public ou fournisseur)" };
   }
 
-  /* 6. COMPTA par contenu â€” sans le mot "avoir", et jamais si c'est une
+  /* 6. COMPTA par contenu — sans le mot "avoir", et jamais si c'est une
         demande entrante (devis, salle) qui parle par hasard d'argent */
-  if (!/demande de devis|salle de mariage|salle de seminaire|salle de sÃ©minaire|demande de renseignement/.test(tout)
-    && /factur|releve bancaire|virement|prelevement|echeance de paiement|taxe de sejour|urssaf|impot|tva|comptabilit|declaration fiscale|ticket de paiement|note de frais|devis nÂ°|avis de paiement/.test(tout)) {
+  if (!/demande de devis|salle de mariage|salle de seminaire|salle de séminaire|demande de renseignement/.test(tout)
+    && /factur|releve bancaire|virement|prelevement|echeance de paiement|taxe de sejour|urssaf|impot|tva|comptabilit|declaration fiscale|ticket de paiement|note de frais|devis n°|avis de paiement/.test(tout)) {
     return { categorie: "compta", dossier: "Compta",
-      analyse: "Piece comptable ou taxe â€” a rapprocher de l'exercice" };
+      analyse: "Piece comptable ou taxe — a rapprocher de l'exercice" };
   }
 
   /* 7. Document d'organisation */
-  if (/rooming|plan de table|deroul[Ã©e]|liste des invit|etat des lieux|caution|attestation d'assurance/.test(tout)) {
+  if (/rooming|plan de table|deroul[ée]|liste des invit|etat des lieux|caution|attestation d'assurance/.test(tout)) {
     return { categorie: "client", dossier: "A rattacher",
-      analyse: "Document d'organisation â€” expediteur inconnu, dossier a rattacher" };
+      analyse: "Document d'organisation — expediteur inconnu, dossier a rattacher" };
   }
 
   /* 8. Demande entrante */
-  if (/demande d'information|demande d'info|demande de renseignement|demande de devis|salle de mariage|salle de seminaire|salle de sÃ©minaire|disponibilit|votre tarif|vos tarifs|visite|brochure|formulaire de demande|nouvelle demande/.test(tout)) {
+  if (/demande d'information|demande d'info|demande de renseignement|demande de devis|salle de mariage|salle de seminaire|salle de séminaire|disponibilit|votre tarif|vos tarifs|visite|brochure|formulaire de demande|nouvelle demande/.test(tout)) {
     return { categorie: "prospect", dossier: "Nouvelle demande",
       analyse: "Demande entrante (renseignements, disponibilites, tarifs)" };
   }
@@ -696,11 +696,11 @@ function classer(mail) {
   /* 9. Suivi de dossier */
   if (/votre mariage|votre evenement|votre week-end|votre sejour|acompte|solde|contrat|confirmation d'option|j - ?\d|j-\d/.test(tout)) {
     return { categorie: "client", dossier: "A rattacher",
-      analyse: "Suivi de dossier â€” expediteur inconnu, a rattacher" };
+      analyse: "Suivi de dossier — expediteur inconnu, a rattacher" };
   }
 
   return { categorie: "a_classer", dossier: null,
-    analyse: "Non reconnu automatiquement â€” a classer manuellement" };
+    analyse: "Non reconnu automatiquement — a classer manuellement" };
 }
 
 /* ---------- Fabrique de devis (demandes deposees dans CDL) ----------
@@ -777,7 +777,7 @@ aucune explication, aucun commentaire avant ou apres. Forme attendue :
  "hypotheses": ["ce que tu as suppose ou n'as pas trouve au catalogue"]
 }
 Regles imperatives :
-- des qu'une prestation existe au catalogue, utilise son articleId â€” n'invente JAMAIS de prix pour elle ;
+- des qu'une prestation existe au catalogue, utilise son articleId — n'invente JAMAIS de prix pour elle ;
 - les lignes libres ne servent qu'aux prestations absentes du catalogue (prix 0 si inconnu) ;
 - quantite des articles factures "par personne" = nombre de personnes ;
 - groupes courts en MAJUSCULES (PRIVATISATION, RESTAURATION, HEBERGEMENTS, VENTES ADDITIONNELLES...) ;
@@ -785,7 +785,7 @@ Regles imperatives :
 - pour un mariage choisis la privatisation de la bonne saison (estivale mai-sept, mi-saison oct-nov et mars-avril, hivernale dec-fev) ;
 - un mariage va TOUJOURS du vendredi 14:00 au dimanche 18:00 : si on te donne un samedi ou un dimanche, prestaDebut = le vendredi de ce week-end ;
 - si un devis existant est fourni, tu le MODIFIES : repars de ses lignes telles quelles, applique UNIQUEMENT les changements demandes, et renvoie le devis COMPLET (toutes les lignes, meme celles qui ne changent pas, dans le meme ordre) ;
-- hebergements : deux grilles â€” sans mention d'annee = tarifs 2026-2027 ; suffixe "tarif 2028" = evenement en 2028 ou apres. Choisis la grille selon la date de l'evenement. En semaine (lundi-jeudi), prends les articles "nuit en semaine".`;
+- hebergements : deux grilles — sans mention d'annee = tarifs 2026-2027 ; suffixe "tarif 2028" = evenement en 2028 ou apres. Choisis la grille selon la date de l'evenement. En semaine (lundi-jeudi), prends les articles "nuit en semaine".`;
 
     const compacterLigne = (l) => ({
       articleId: l.articleId || undefined, libre: l.articleId ? undefined : true,
@@ -806,7 +806,7 @@ ${JSON.stringify({
 ` : ""}
 Evenement lie :
 ${ev ? JSON.stringify({ client: ev.client, categorie: ev.categorie, type: ev.type, dateDebut: ev.dateDebut, dateFin: ev.dateFin, heureDebut: ev.heureDebut, heureFin: ev.heureFin, nbInvites: ev.nbInvites, nbRepas: ev.nbRepas, nbVinHonneur: ev.nbVinHonneur, ceremonie: ev.ceremonie, notesEquipe: ev.notes || "" }) : "(aucun)"}
-${ev && ev.notes ? "IMPORTANT : les notes de l'equipe (notesEquipe) viennent du premier contact telephonique â€” elles priment pour composer les lignes du devis." : ""}
+${ev && ev.notes ? "IMPORTANT : les notes de l'equipe (notesEquipe) viennent du premier contact telephonique — elles priment pour composer les lignes du devis." : ""}
 
 Catalogue :
 ${JSON.stringify(catalogue)}
@@ -836,7 +836,7 @@ Date du jour : ${new Date().toISOString().slice(0, 10)}`;
           unite: a.unite, tvaMode: a.tvaMode === "mixte" ? "mixte" : "simple", tva: a.tva || "20",
           prixHT: a.prixHT || "", partHT10: a.partHT10 || "", partHT20: a.partHT20 || "" });
       } else {
-        lignes.push({ ...commun, reference: "", nom: lg.nom || "Prestation Ã  prÃ©ciser", description: lg.description || "",
+        lignes.push({ ...commun, reference: "", nom: lg.nom || "Prestation à préciser", description: lg.description || "",
           unite: lg.unite || "forfait", tvaMode: "simple", tva: String(lg.tva || "20"),
           prixHT: Number(lg.prixHT) || 0, partHT10: "", partHT20: "" });
       }
@@ -864,8 +864,8 @@ Date du jour : ${new Date().toISOString().slice(0, 10)}`;
     const moins = (dateISO, jours) => { const t = new Date(dateISO + "T12:00:00"); t.setDate(t.getDate() - jours); return t.toISOString().slice(0, 10); };
     const baseSolde = debut || jour;
     const echeances = famille === "mariage"
-      ? [{ pct: 30, libelle: "Ã€ la signature", date: jour }, { pct: 70, libelle: "Solde â€” 2 mois avant l'Ã©vÃ©nement", date: moins(baseSolde, 60) }]
-      : [{ pct: 50, libelle: "Ã€ la signature", date: jour }, { pct: 50, libelle: "Solde â€” 72 h avant l'Ã©vÃ©nement", date: moins(baseSolde, 3) }];
+      ? [{ pct: 30, libelle: "À la signature", date: jour }, { pct: 70, libelle: "Solde — 2 mois avant l'événement", date: moins(baseSolde, 60) }]
+      : [{ pct: 50, libelle: "À la signature", date: jour }, { pct: 50, libelle: "Solde — 72 h avant l'événement", date: moins(baseSolde, 3) }];
 
     /* Ajustement : on garde l'identite du devis (numero, id, date) ; sinon nouveau. */
     const numero = devisExistant ? devisExistant.numero : await prochainNumeroDevisServeur();
@@ -885,8 +885,8 @@ Date du jour : ${new Date().toISOString().slice(0, 10)}`;
       lignes, echeances: devisExistant && devisExistant.echeances && devisExistant.echeances.length ? devisExistant.echeances : echeances,
       totalTTC: totalTTCDevis(lignes, false), totalTTCAvecOptions: totalTTCDevis(lignes, true),
       noteAssistant: (Array.isArray(json.hypotheses) && json.hypotheses.length
-        ? "HypothÃ¨ses : " + json.hypotheses.join(" Â· ")
-        : (devisExistant ? "Devis ajustÃ© par l'assistant â€” Ã  relire avant envoi." : "Devis prÃ©parÃ© par l'assistant â€” Ã  relire avant envoi.")),
+        ? "Hypothèses : " + json.hypotheses.join(" · ")
+        : (devisExistant ? "Devis ajusté par l'assistant — à relire avant envoi." : "Devis préparé par l'assistant — à relire avant envoi.")),
     };
     const enreg = { id: idDevis, donnees: devis, modifie_le: new Date().toISOString() };
     const { error: eIns } = devisExistant
@@ -897,7 +897,7 @@ Date du jour : ${new Date().toISOString().slice(0, 10)}`;
       donnees: { ...don, statut: "fait", devisId: idDevis, numero },
       modifie_le: new Date().toISOString(),
     }).eq("id", dem.id);
-    console.log(`Assistant : devis ${numero} ${devisExistant ? "ajuste" : "fabrique"} (${lignes.length} ligne(s), ${devis.totalTTC} â‚¬ TTC).`);
+    console.log(`Assistant : devis ${numero} ${devisExistant ? "ajuste" : "fabrique"} (${lignes.length} ligne(s), ${devis.totalTTC} € TTC).`);
   } catch (e) {
     console.log("  ! Fabrication devis :", e.message);
     try {
@@ -933,7 +933,7 @@ async function envoyerDevisParMail(env) {
     if (!/^[\w.+-]+@[\w-]+\.[\w.-]+$/.test(dest)) throw new Error("adresse destinataire invalide : " + dest);
     if (!don.corps || !don.corps.trim()) throw new Error("message vide");
     const echap = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    /* Dans la version HTML, le lien du devis s'affiche Â« Voir votre document Â»
+    /* Dans la version HTML, le lien du devis s'affiche « Voir votre document »
        au lieu de l'adresse brute (qui reste dans la version texte). */
     const html = '<div style="font-family:Georgia,serif;font-size:15px;line-height:1.6;color:#3d3a35;white-space:pre-wrap">'
       + echap(don.corps).replace(/(https?:\/\/[^\s]+)/g, (url) =>
@@ -954,7 +954,7 @@ async function envoyerDevisParMail(env) {
       donnees: { ...don, statut: "envoye", envoyeLe: new Date().toISOString() },
       modifie_le: new Date().toISOString(),
     }).eq("id", env.id);
-    /* le devis passe en statut Â« envoye Â» */
+    /* le devis passe en statut « envoye » */
     if (don.devisId) {
       const { data: dv } = await supabase.from("devis").select("donnees").eq("id", don.devisId).single();
       if (dv && dv.donnees && dv.donnees.statut === "brouillon") {
@@ -998,11 +998,11 @@ lieu de receptions en Normandie (Thue et Mue, a 20 min de Caen) : granges du XVI
 de Caen, cour d'honneur de 1500 m2 avec fontaine, parc de 2,5 hectares, 800 m2 de salles modulables,
 82 couchages, privatisation EXCLUSIVE (jamais de groupes croises), accompagnement par Helene
 (interlocutrice unique), aucun prestataire impose. Signature de la maison :
-Â« Laissez-vous porter par l'Histoire du lieu, ecrivez la Votre. Â»
+« Laissez-vous porter par l'Histoire du lieu, ecrivez la Votre. »
 Ton : luxe sobre, chaleureux, narratif, JAMAIS vendeur agressif.
 Selon le reseau :
 - instagram : emotion mariage, phrases courtes et sensorielles, 1 emoji sobre maximum par paragraphe,
-  finir par une adresse douce (Â« Il reste quelques week-ends en 2027 â€” ecrivez-nous Â») puis 8 a 10 hashtags
+  finir par une adresse douce (« Il reste quelques week-ends en 2027 — ecrivez-nous ») puis 8 a 10 hashtags
   (#mariagenormandie #chateaumariage #mariagecalvados #domainedelacourdeslys + specifiques a la photo) ;
 - linkedin : destine aux entreprises (seminaires, journees de cohesion, soirees), chiffres concrets,
   0 a 3 hashtags, appel a contact direct (contact@domainedelacourdeslys.com) ;
@@ -1016,13 +1016,13 @@ async function redigerPost(row) {
   try {
     const message = `Reseau : ${don.reseau || "instagram"}
 Date de publication prevue : ${don.date || "(libre)"}
-Consigne de l'equipe : ${don.consigne || "(aucune â€” texte au gout de la maison)"}
+Consigne de l'equipe : ${don.consigne || "(aucune — texte au gout de la maison)"}
 ${don.texte ? `Texte actuel a retravailler :\n${don.texte}` : "(pas encore de texte : redige-le)"}
 La photo jointe est decrite par son nom de fichier : ${don.chemin || "?"}`;
     const texte = await appelerClaude(MODELE_REDACTION, LIGNE_EDITORIALE, message, 800);
     if (!texte) throw new Error("reponse vide de l'assistant");
     await supabase.from("posts_reseaux").update({
-      donnees: { ...don, texte, statut: "brouillon", note: "RÃ©digÃ© par l'assistant â€” relisez avant de publier." },
+      donnees: { ...don, texte, statut: "brouillon", note: "Rédigé par l'assistant — relisez avant de publier." },
       modifie_le: new Date().toISOString(),
     }).eq("id", row.id);
     console.log(`Post ${don.reseau || "?"} redige (${row.id}).`);
@@ -1030,7 +1030,7 @@ La photo jointe est decrite par son nom de fichier : ${don.chemin || "?"}`;
     console.log("  ! Redaction post :", e.message);
     try {
       await supabase.from("posts_reseaux").update({
-        donnees: { ...don, statut: "brouillon", note: "L'assistant n'a pas rÃ©ussi : " + e.message },
+        donnees: { ...don, statut: "brouillon", note: "L'assistant n'a pas réussi : " + e.message },
         modifie_le: new Date().toISOString(),
       }).eq("id", row.id);
     } catch (e2) { /* prochain cycle */ }
@@ -1086,7 +1086,7 @@ async function cycle() {
       const parsed = await simpleParser(msg.source);
       const from = (parsed.from && parsed.from.value && parsed.from.value[0]) || {};
 
-      /* v8.6 : les mails Â« tout HTML Â» deviennent lisibles (balises retirÃ©es). */
+      /* v8.6 : les mails « tout HTML » deviennent lisibles (balises retirées). */
       let corps = (parsed.text || "").trim();
       if ((!corps || /^<!doctype|^<html/i.test(corps)) && (parsed.html || corps)) {
         corps = String(parsed.html || corps)
@@ -1095,7 +1095,7 @@ async function cycle() {
           .replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
           .replace(/<[^>]+>/g, " ")
           .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-          .replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&eacute;/g, "Ã©").replace(/&egrave;/g, "Ã¨").replace(/&agrave;/g, "Ã ")
+          .replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&eacute;/g, "é").replace(/&egrave;/g, "è").replace(/&agrave;/g, "à")
           .replace(/[ \t]+/g, " ").replace(/\n\s*\n\s*\n+/g, "\n\n").trim();
       }
       const pieces = [];
@@ -1141,13 +1141,13 @@ async function cycle() {
       mail.dossier = dossier;
       mail.analyse = analyse;
       if (pieces.length) {
-        mail.analyse += ` Â· ${pieces.length} piece(s) jointe(s) : ${pieces.map((p) => p.nom).join(", ")}`;
+        mail.analyse += ` · ${pieces.length} piece(s) jointe(s) : ${pieces.map((p) => p.nom).join(", ")}`;
       }
 
       /* v8.7 : un document reconnu coche la fiche de l'evenement tout seul. */
       try {
         const coches = await cocherDocumentsFiche(mail, pieces.map((p) => p.nom || ""));
-        if (coches && coches.length) mail.analyse += ` Â· cochÃ© dans la fiche : ${coches.join(", ")}`;
+        if (coches && coches.length) mail.analyse += ` · coché dans la fiche : ${coches.join(", ")}`;
       } catch (e) { /* la coche ne doit jamais bloquer la lecture */ }
 
       const { error } = await supabase
@@ -1157,7 +1157,7 @@ async function cycle() {
         console.log(`  ! Erreur ecriture UID ${msg.uid} : ${error.message}`);
       } else {
         nouveaux++;
-        console.log(`  + [${categorie}${dossier ? " / " + dossier : ""}] ${mail.expediteur || mail.expediteur_email} â€” ${mail.objet}`);
+        console.log(`  + [${categorie}${dossier ? " / " + dossier : ""}] ${mail.expediteur || mail.expediteur_email} — ${mail.objet}`);
       }
 
       if (msg.uid > dernierUid) dernierUid = msg.uid;
@@ -1181,12 +1181,12 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL â€” Lecteur de boite mail v8.9 (LECTURE SEULE cote IMAP) demarre.");
-  console.log(`Boite : ${process.env.MAIL_UTILISATEUR} Â· Serveur : ${process.env.IMAP_HOST}`);
-  console.log(`Verification toutes les ${FREQ / 60000} minute(s) Â· reponses et demandes de devis relevees toutes les 30 s.`);
+  console.log("CDL — Lecteur de boite mail v8.9 (LECTURE SEULE cote IMAP) demarre.");
+  console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
+  console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
-    ? `Classement par IA actif (${MODELE_IA}) en secours des regles Â· brouillons rediges par ${MODELE_REDACTION}.`
-    : "Classement par regles seules (pas de cle ANTHROPIC_API_KEY) â€” brouillons IA indisponibles.");
+    ? `Classement par IA actif (${MODELE_IA}) en secours des regles · brouillons rediges par ${MODELE_REDACTION}.`
+    : "Classement par regles seules (pas de cle ANTHROPIC_API_KEY) — brouillons IA indisponibles.");
   console.log(`Envoi SMTP : ${SMTP_HOST}:${SMTP_PORT} (uniquement les reponses validees dans CDL).`);
 
   console.log(`Sauvegarde automatique : le dimanche vers 20h (heure fr.) par mail a ${SAUVEGARDE_DEST}.`);
@@ -1195,7 +1195,7 @@ async function cycle() {
     try {
       await cycle();
     } catch (e) {
-      console.log("Erreur cycle :", e.message, "â€” nouvel essai au prochain cycle.");
+      console.log("Erreur cycle :", e.message, "— nouvel essai au prochain cycle.");
       if (e.responseText) console.log("  Reponse serveur :", e.responseText);
     }
     await verifierSauvegarde();
@@ -1208,3 +1208,4 @@ async function cycle() {
   setInterval(traiterEnvoisMails, 30000);
   setInterval(traiterPostsReseaux, 30000);
 })();
+
