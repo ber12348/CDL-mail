@@ -1,5 +1,9 @@
+.11)
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v8.10  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v8.11  ·  LECTURE SEULE (IMAP)
+   (v8.11 : l'assistant REGARDE la photo du post — l'image publique du bucket
+    'reseaux' est jointe a l'appel IA ; le texte decrit ce qu'elle montre vraiment,
+    au lieu d'etre invente depuis le nom de fichier.)
    (v8.10 : LA vraie cause de la panne du 28/08 — les files posts/demandes/envois
     ne lisaient que les 50 ou 20 premieres lignes de leur table ; des que la
     phototheque a depasse 50 lignes, les posts a rediger devenaient invisibles.
@@ -1016,6 +1020,12 @@ Selon le reseau :
 Regles imperatives : n'invente JAMAIS un fait, un prix, un nom ou une date ; pas de visage nomme ;
 reponds UNIQUEMENT avec le texte du post, sans commentaire autour.`;
 
+/* v8.11 : l'assistant REGARDE la photo (jointe par son adresse publique du bucket
+   'reseaux') au lieu de deviner depuis le nom de fichier — le texte doit decrire
+   ce que montre reellement l'image. */
+const urlPhotoReseau = (chemin) =>
+  `${process.env.SUPABASE_URL}/storage/v1/object/public/reseaux/${encodeURIComponent(chemin)}`;
+
 async function redigerPost(row) {
   const don = row.donnees || {};
   try {
@@ -1023,8 +1033,24 @@ async function redigerPost(row) {
 Date de publication prevue : ${don.date || "(libre)"}
 Consigne de l'equipe : ${don.consigne || "(aucune — texte au gout de la maison)"}
 ${don.texte ? `Texte actuel a retravailler :\n${don.texte}` : "(pas encore de texte : redige-le)"}
-La photo jointe est decrite par son nom de fichier : ${don.chemin || "?"}`;
-    const texte = await appelerClaude(MODELE_REDACTION, LIGNE_EDITORIALE, message, 800);
+La photo du post est jointe : appuie le texte sur ce qu'elle montre REELLEMENT
+(lieu, lumiere, objets, moment) — n'invente rien qui n'y figure pas.`;
+    let texte;
+    if (don.chemin) {
+      try {
+        texte = await appelerClaude(MODELE_REDACTION, LIGNE_EDITORIALE, [
+          { type: "image", source: { type: "url", url: urlPhotoReseau(don.chemin) } },
+          { type: "text", text: message },
+        ], 800);
+      } catch (e1) {
+        /* photo illisible pour l'API ? on retente sans elle plutot que d'echouer */
+        console.log("  ! Photo non jointe (" + e1.message + "), redaction sans image.");
+        texte = await appelerClaude(MODELE_REDACTION, LIGNE_EDITORIALE,
+          message + `\n(La photo n'a pas pu etre jointe ; son nom de fichier : ${don.chemin})`, 800);
+      }
+    } else {
+      texte = await appelerClaude(MODELE_REDACTION, LIGNE_EDITORIALE, message, 800);
+    }
     if (!texte) throw new Error("reponse vide de l'assistant");
     await supabase.from("posts_reseaux").update({
       donnees: { ...don, texte, statut: "brouillon", note: "Rédigé par l'assistant — relisez avant de publier." },
@@ -1189,7 +1215,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v8.10 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v8.11 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
