@@ -1,4 +1,5 @@
-.11)
+ok
+   
 /* ============================================================
    CDL — Lecteur de boite mail  ·  v8.11  ·  LECTURE SEULE (IMAP)
    (v8.11 : l'assistant REGARDE la photo du post — l'image publique du bucket
