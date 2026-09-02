@@ -1,7 +1,9 @@
-
-   
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v9.0  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v9.1  ·  LECTURE SEULE (IMAP)
+   (v9.1 : CALENDRIER — les posts Instagram en statut 'programme' partent tout
+    seuls a la date et l'heure prevues, heure de Paris ; un creneau manque de
+    plus de 3 jours revient en brouillon avec explication au lieu de surgir
+    a contretemps. LinkedIn/Google restent manuels, signales par la page.)
    (v9.0 : PUBLICATION INSTAGRAM — le bouton « Publier sur Instagram » de la page
     Reseaux passe le post en 'a_publier', le lecteur l'envoie via l'API Instagram
     (jeton INSTAGRAM_TOKEN dans Render, rafraichi chaque semaine tout seul,
@@ -1203,15 +1205,50 @@ async function publierSurInstagram(row) {
   }
 }
 
+/* L'heure du Domaine, pas celle du serveur (Render vit en UTC). */
+function maintenantParis() {
+  const parts = new Intl.DateTimeFormat("fr-CA", {
+    timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(new Date());
+  const v = {};
+  parts.forEach((x) => { v[x.type] = x.value; });
+  return `${v.year}-${v.month}-${v.day} ${v.hour}:${v.minute}`;
+}
+
 let publicationsEnCours = 0;
 async function traiterPublications() {
   if (!tablePostsOK || verrouPose(publicationsEnCours) || !JETON_IG_ENV) return;
   publicationsEnCours = Date.now();
   try {
     await rafraichirJetonIG();
+
+    /* 1. Demandes immediates (bouton « Publier sur Instagram »). */
     const { data } = await supabase.from("posts_reseaux").select("*")
       .eq("donnees->>statut", "a_publier").limit(5);
     for (const row of data || []) await publierSurInstagram(row);
+
+    /* 2. Calendrier (v9.1) : les posts Instagram programmes partent tout seuls
+       a l'heure dite (heure de Paris). Un creneau manque de plus de 3 jours
+       revient en brouillon plutot que de surgir en ligne a contretemps. */
+    const paris = maintenantParis();
+    const { data: programmes } = await supabase.from("posts_reseaux").select("*")
+      .eq("donnees->>statut", "programme").limit(50);
+    for (const row of programmes || []) {
+      const don = row.donnees || {};
+      if ((don.reseau || "") !== "instagram") continue;
+      const quand = `${don.date || "9999-12-31"} ${don.heure || "09:00"}`;
+      if (quand > paris) continue;
+      const retardJours = (Date.now() - new Date(`${don.date}T12:00:00`).getTime()) / 86400000;
+      if (retardJours > 3) {
+        await supabase.from("posts_reseaux").update({
+          donnees: { ...don, statut: "brouillon", erreurPublication: "Créneau manqué (lecteur à l'arrêt ce jour-là ?) — reprogrammez ou publiez à la main." },
+          modifie_le: new Date().toISOString(),
+        }).eq("id", row.id);
+        continue;
+      }
+      await publierSurInstagram(row);
+    }
   } catch (e) {
     console.log("  ! Publications Instagram :", e.message);
   } finally {
@@ -1349,7 +1386,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v9.0 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v9.1 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
