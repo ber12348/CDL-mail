@@ -1,7 +1,13 @@
 
    
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v8.11  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v9.0  ·  LECTURE SEULE (IMAP)
+   (v9.0 : PUBLICATION INSTAGRAM — le bouton « Publier sur Instagram » de la page
+    Reseaux passe le post en 'a_publier', le lecteur l'envoie via l'API Instagram
+    (jeton INSTAGRAM_TOKEN dans Render, rafraichi chaque semaine tout seul,
+    copie fraiche dans la ligne 'jeton_instagram' de posts_reseaux) ; en cas
+    d'echec le post revient en brouillon avec le motif ; lien « Voir sur
+    Instagram » range dans le post apres publication.)
    (v8.11 : l'assistant REGARDE la photo du post — l'image publique du bucket
     'reseaux' est jointe a l'appel IA ; le texte decrit ce qu'elle montre vraiment,
     au lieu d'etre invente depuis le nom de fichier.)
@@ -1086,6 +1092,133 @@ async function traiterPostsReseaux() {
   }
 }
 
+/* ---------- Publication Instagram (v9) ----------
+   Le bouton « Publier sur Instagram » de la page Reseaux passe le post en
+   statut 'a_publier' ; ici on l'envoie vraiment : conteneur puis publication
+   via l'API Instagram (compte professionnel @domainedelacourdeslys).
+   Le jeton vient de INSTAGRAM_TOKEN (Render) ; il est rafraichi chaque semaine
+   et la version fraiche est rangee dans la ligne 'jeton_instagram' de la table
+   posts_reseaux (si le client regenere un jeton dans Render, il reprend la main). */
+const INSTAGRAM_ID = "17841414847922598";
+const JETON_IG_ENV = process.env.INSTAGRAM_TOKEN || "";
+const DELAI_GRAPH = 60000;
+let jetonIG = null; // { token, rafraichi_le }
+
+async function chargerJetonIG() {
+  if (!jetonIG) {
+    const { data } = await supabase.from("posts_reseaux").select("donnees").eq("id", "jeton_instagram").maybeSingle();
+    if (data && data.donnees && data.donnees.token) jetonIG = data.donnees;
+    else jetonIG = { type: "jeton", token: JETON_IG_ENV, rafraichi_le: "" };
+  }
+  return jetonIG.token;
+}
+
+async function sauverJetonIG(token) {
+  jetonIG = { type: "jeton", token, rafraichi_le: new Date().toISOString() };
+  await supabase.from("posts_reseaux").upsert(
+    { id: "jeton_instagram", donnees: jetonIG, modifie_le: new Date().toISOString() },
+    { onConflict: "id" }
+  );
+}
+
+async function graphIG(chemin, params, methode) {
+  const url = new URL(`https://graph.instagram.com/v23.0/${chemin}`);
+  Object.entries(params || {}).forEach(([k, v]) => url.searchParams.set(k, v));
+  const r = await fetch(url, { method: methode || "GET", signal: AbortSignal.timeout(DELAI_GRAPH) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const e = (data && data.error) || {};
+    const err = new Error(e.error_user_msg || e.message || `API Instagram ${r.status}`);
+    err.code = e.code;
+    throw err;
+  }
+  return data;
+}
+
+/* Un jeton vit 60 jours : rafraichi une fois par semaine, il ne meurt jamais.
+   (Instagram refuse de rafraichir un jeton de moins de 24 h — on reessaie
+   simplement au cycle suivant jusqu'a ce que ca passe.) */
+async function rafraichirJetonIG() {
+  const jeton = await chargerJetonIG();
+  if (!jeton) return;
+  const age = jetonIG.rafraichi_le ? (Date.now() - new Date(jetonIG.rafraichi_le).getTime()) / 86400000 : Infinity;
+  if (age < 7) return;
+  try {
+    const url = new URL("https://graph.instagram.com/refresh_access_token");
+    url.searchParams.set("grant_type", "ig_refresh_token");
+    url.searchParams.set("access_token", jeton);
+    const r = await fetch(url, { signal: AbortSignal.timeout(DELAI_GRAPH) });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data.access_token) {
+      await sauverJetonIG(data.access_token);
+      console.log("Jeton Instagram rafraichi (valable 60 jours).");
+    } else if (JETON_IG_ENV && jeton !== JETON_IG_ENV) {
+      jetonIG = { type: "jeton", token: JETON_IG_ENV, rafraichi_le: "" };
+      console.log("  ! Jeton stocke refuse — repli sur INSTAGRAM_TOKEN de l'environnement.");
+    }
+  } catch (e) {
+    console.log("  ! Rafraichissement jeton Instagram :", e.message);
+  }
+}
+
+async function publierSurInstagram(row) {
+  const don = row.donnees || {};
+  const maj = (champs) => supabase.from("posts_reseaux").update({
+    donnees: { ...don, ...champs },
+    modifie_le: new Date().toISOString(),
+  }).eq("id", row.id);
+  try {
+    if ((don.reseau || "") !== "instagram") throw new Error("seul Instagram est branche pour l'instant");
+    if (!don.chemin) throw new Error("pas de photo attachee au post");
+    if (!(don.texte || "").trim()) throw new Error("le texte du post est vide");
+    const jeton = await chargerJetonIG();
+    if (!jeton) throw new Error("pas de jeton Instagram (INSTAGRAM_TOKEN absent)");
+    const conteneur = await graphIG(`${INSTAGRAM_ID}/media`, {
+      image_url: urlPhotoReseau(don.chemin),
+      caption: don.texte,
+      access_token: jeton,
+    }, "POST");
+    if (!conteneur.id) throw new Error("pas d'identifiant de conteneur");
+    const publie = await graphIG(`${INSTAGRAM_ID}/media_publish`, {
+      creation_id: conteneur.id,
+      access_token: jeton,
+    }, "POST");
+    let permalien = "";
+    try {
+      const infos = await graphIG(String(publie.id), { fields: "permalink", access_token: jeton });
+      permalien = infos.permalink || "";
+    } catch (e2) { /* le lien est un confort, pas une condition */ }
+    await maj({ statut: "publie", publieLe: new Date().toISOString().slice(0, 10), permalien, erreurPublication: "", note: "Publié sur Instagram par le lecteur." });
+    console.log(`Post publie sur Instagram (${row.id})${permalien ? " -> " + permalien : ""}.`);
+  } catch (e) {
+    if (e.code === 190 && JETON_IG_ENV && jetonIG && jetonIG.token !== JETON_IG_ENV) {
+      /* jeton stocke perime : on repart du jeton de l'environnement, le post reste en file */
+      await sauverJetonIG(JETON_IG_ENV);
+      jetonIG.rafraichi_le = "";
+      console.log("  Jeton Instagram stocke invalide — retour au jeton Render, nouvel essai au prochain cycle.");
+      return;
+    }
+    console.log("  ! Publication Instagram :", e.message);
+    await maj({ statut: "brouillon", erreurPublication: "Publication refusée : " + e.message });
+  }
+}
+
+let publicationsEnCours = 0;
+async function traiterPublications() {
+  if (!tablePostsOK || verrouPose(publicationsEnCours) || !JETON_IG_ENV) return;
+  publicationsEnCours = Date.now();
+  try {
+    await rafraichirJetonIG();
+    const { data } = await supabase.from("posts_reseaux").select("*")
+      .eq("donnees->>statut", "a_publier").limit(5);
+    for (const row of data || []) await publierSurInstagram(row);
+  } catch (e) {
+    console.log("  ! Publications Instagram :", e.message);
+  } finally {
+    publicationsEnCours = 0;
+  }
+}
+
 /* ---------- Un cycle de lecture ---------- */
 async function cycle() {
   await verifierExtensionsV5();
@@ -1216,7 +1349,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v8.11 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v9.0 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
@@ -1242,4 +1375,8 @@ async function cycle() {
   setInterval(traiterDemandesDevis, 30000);
   setInterval(traiterEnvoisMails, 30000);
   setInterval(traiterPostsReseaux, 30000);
+  setInterval(traiterPublications, 45000);
+  console.log(JETON_IG_ENV
+    ? "Publication Instagram active (compte @domainedelacourdeslys)."
+    : "Publication Instagram en veille (INSTAGRAM_TOKEN absent).");
 })();
