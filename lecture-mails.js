@@ -1,5 +1,13 @@
+.1)
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v9.1  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v9.2  ·  LECTURE SEULE (IMAP)
+   (v9.2 : CONSEILS DE POSTS — chaque semaine (ou via le bouton 🔄 de la page),
+    le lecteur croise le planning reel — week-ends a vendre, semaines pro vides —
+    avec la ligne editoriale et propose 5 idees ciblees, rangees dans la ligne
+    'conseils_reseaux' de posts_reseaux. REGLE CLIENT : les disponibilites ne
+    sont JAMAIS publiees, elles ne servent qu'a choisir les themes en interne.
+    Corrige aussi la ligne jeton_instagram : l'id est desormais DANS donnees,
+    sinon un enregistrement depuis la page pouvait l'effacer.)
    (v9.1 : CALENDRIER — les posts Instagram en statut 'programme' partent tout
     seuls a la date et l'heure prevues, heure de Paris ; un creneau manque de
     plus de 3 jours revient en brouillon avec explication au lieu de surgir
@@ -1087,6 +1095,7 @@ async function traiterPostsReseaux() {
       .eq("donnees->>statut", "a_rediger").limit(20);
     const attente = data || [];
     for (const row of attente) await redigerPost(row);
+    await verifierConseils();
   } catch (e) {
     console.log("  ! Posts reseaux :", e.message);
   } finally {
@@ -1116,7 +1125,9 @@ async function chargerJetonIG() {
 }
 
 async function sauverJetonIG(token) {
-  jetonIG = { type: "jeton", token, rafraichi_le: new Date().toISOString() };
+  /* l'id est AUSSI dans donnees : le shim de la page identifie les objets par
+     leur champ id — sans lui, un enregistrement depuis la page effacerait la ligne */
+  jetonIG = { id: "jeton_instagram", type: "jeton", token, rafraichi_le: new Date().toISOString() };
   await supabase.from("posts_reseaux").upsert(
     { id: "jeton_instagram", donnees: jetonIG, modifie_le: new Date().toISOString() },
     { onConflict: "id" }
@@ -1203,6 +1214,96 @@ async function publierSurInstagram(row) {
     console.log("  ! Publication Instagram :", e.message);
     await maj({ statut: "brouillon", erreurPublication: "Publication refusée : " + e.message });
   }
+}
+
+/* ---------- Conseils de posts (v9.2) ----------
+   Le lecteur croise le planning REEL (week-ends libres par mois) avec la ligne
+   editoriale et propose 5 idees de posts ciblees. REGLE CLIENT ABSOLUE : les
+   disponibilites ne sont JAMAIS publiees — elles servent uniquement, en interne,
+   a choisir les themes (« Mariez-vous en janvier »). */
+const MOIS_FR = ["janvier", "fevrier", "mars", "avril", "mai", "juin",
+  "juillet", "aout", "septembre", "octobre", "novembre", "decembre"];
+
+async function statistiquesPlanning() {
+  const { data } = await supabase.from("evenements").select("donnees").limit(3000);
+  const evts = (data || []).map((r) => r.donnees || {});
+  const OCCUPANTS = ["confirme", "option", "bloque", "termine", "en_cours"];
+  const vendredisPris = new Set();
+  const semainesParMois = {};
+  evts.forEach((e) => {
+    if (!e.dateDebut || !OCCUPANTS.includes(e.statut)) return;
+    if (e.type === "semaine") {
+      const m = e.dateDebut.slice(0, 7);
+      semainesParMois[m] = (semainesParMois[m] || 0) + 1;
+    } else {
+      vendredisPris.add(e.dateDebut.slice(0, 10));
+    }
+  });
+  const lignes = [];
+  const stats = {};
+  const d = new Date();
+  for (let i = 0; i < 280; i++) {
+    d.setDate(d.getDate() + 1);
+    if (d.getDay() !== 5) continue;
+    const iso = d.toISOString().slice(0, 10);
+    const m = iso.slice(0, 7);
+    stats[m] = stats[m] || { libres: 0, total: 0 };
+    stats[m].total++;
+    if (!vendredisPris.has(iso)) stats[m].libres++;
+  }
+  Object.entries(stats).sort().forEach(([m, s]) => {
+    lignes.push(`${MOIS_FR[Number(m.slice(5)) - 1]} ${m.slice(0, 4)} : ${s.libres} week-end(s) mariage encore a vendre sur ${s.total}, ${semainesParMois[m] || 0} evenement(s) pro en semaine`);
+  });
+  return lignes;
+}
+
+async function genererConseils() {
+  try {
+    const lignes = await statistiquesPlanning();
+    const consigne = `${LIGNE_EDITORIALE}
+
+MISSION SPECIALE : tu es le conseiller editorial du Domaine. A partir de l'etat
+INTERNE du planning ci-dessous, propose exactement 5 idees de posts pour aider a
+remplir les periodes creuses (mariages d'hiver, semaines pro vides) et nourrir le
+referencement local Google (mariage Caen, seminaire Calvados, Normandie).
+
+REGLE ABSOLUE DE LA MAISON : les textes destines au public ne mentionnent JAMAIS
+de disponibilites — ni dates libres, ni nombre de week-ends, ni « il nous reste ».
+Uniquement des allusions thematiques (« Mariez-vous en janvier », « Les charmes
+d'un mariage en mai »). Les chiffres du planning restent strictement internes.
+
+Reponds UNIQUEMENT avec un tableau JSON de 5 objets :
+[{"titre":"...", "reseau":"instagram|linkedin|google",
+  "momentPublication":"quand publier et pourquoi ce moment-la",
+  "pourquoi":"la raison interne, chiffres du planning autorises ICI seulement",
+  "consigne":"consigne prete pour l'assistant redacteur — thematique, sans la moindre mention de disponibilite"}]`;
+    const message = `Etat interne du planning (CONFIDENTIEL, ne jamais publier) :
+${lignes.join("\n")}
+Date du jour : ${new Date().toISOString().slice(0, 10)}.`;
+    const texte = await appelerClaude(MODELE_REDACTION, consigne, message, 2500);
+    const conseils = JSON.parse(texte.slice(texte.indexOf("["), texte.lastIndexOf("]") + 1));
+    if (!Array.isArray(conseils) || !conseils.length) throw new Error("reponse sans conseils");
+    await supabase.from("posts_reseaux").upsert({
+      id: "conseils_reseaux",
+      donnees: { id: "conseils_reseaux", type: "conseils", statut: "pret", genere_le: new Date().toISOString(), conseils },
+      modifie_le: new Date().toISOString(),
+    }, { onConflict: "id" });
+    console.log(`Conseils de posts regeneres (${conseils.length}).`);
+  } catch (e) {
+    console.log("  ! Conseils de posts :", e.message);
+    await supabase.from("posts_reseaux").upsert({
+      id: "conseils_reseaux",
+      donnees: { id: "conseils_reseaux", type: "conseils", statut: "erreur", genere_le: new Date().toISOString(), erreur: e.message, conseils: [] },
+      modifie_le: new Date().toISOString(),
+    }, { onConflict: "id" }).catch?.(() => {});
+  }
+}
+
+async function verifierConseils() {
+  const { data } = await supabase.from("posts_reseaux").select("donnees").eq("id", "conseils_reseaux").maybeSingle();
+  const dc = (data && data.donnees) || null;
+  const age = dc && dc.genere_le ? (Date.now() - new Date(dc.genere_le).getTime()) / 86400000 : Infinity;
+  if (!dc || dc.statut === "a_generer" || (dc.statut === "pret" && age > 7)) await genererConseils();
 }
 
 /* L'heure du Domaine, pas celle du serveur (Render vit en UTC). */
@@ -1386,7 +1487,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v9.1 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v9.2 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
