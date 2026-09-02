@@ -1,4 +1,4 @@
-.1)
+
 /* ============================================================
    CDL — Lecteur de boite mail  ·  v9.2  ·  LECTURE SEULE (IMAP)
    (v9.2 : CONSEILS DE POSTS — chaque semaine (ou via le bouton 🔄 de la page),
