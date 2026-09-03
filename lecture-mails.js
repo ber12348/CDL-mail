@@ -1,6 +1,10 @@
 
+📋 Copier tout le code (v9.3)
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v9.2  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v9.3  ·  LECTURE SEULE (IMAP)
+   (v9.3 : publication Instagram — attend que la photo soit prete (status_code
+    FINISHED, jusqu'a 60 s) avant media_publish ; corrige « The media is not
+    ready for publishing » du 03/09.)
    (v9.2 : CONSEILS DE POSTS — chaque semaine (ou via le bouton 🔄 de la page),
     le lecteur croise le planning reel — week-ends a vendre, semaines pro vides —
     avec la ligne editoriale et propose 5 idees ciblees, rangees dans la ligne
@@ -1192,6 +1196,22 @@ async function publierSurInstagram(row) {
       access_token: jeton,
     }, "POST");
     if (!conteneur.id) throw new Error("pas d'identifiant de conteneur");
+    /* v9.3 : Instagram prepare la photo pendant quelques secondes — publier
+       trop vite renvoie « media is not ready ». On attend le feu vert. */
+    const pause = (ms) => new Promise((res) => setTimeout(res, ms));
+    let pret = false;
+    for (let i = 0; i < 12 && !pret; i++) {
+      await pause(5000);
+      try {
+        const etat = await graphIG(String(conteneur.id), { fields: "status_code", access_token: jeton });
+        if (etat.status_code === "FINISHED") pret = true;
+        else if (etat.status_code === "ERROR") throw new Error("Instagram n'a pas pu préparer la photo (conteneur en erreur)");
+      } catch (e3) {
+        if (/conteneur en erreur/.test(e3.message)) throw e3;
+        /* etat pas encore lisible : on continue d'attendre */
+      }
+    }
+    if (!pret) throw new Error("photo pas prête après 60 s — nouvel essai au prochain créneau");
     const publie = await graphIG(`${INSTAGRAM_ID}/media_publish`, {
       creation_id: conteneur.id,
       access_token: jeton,
@@ -1487,7 +1507,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v9.2 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v9.3 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
