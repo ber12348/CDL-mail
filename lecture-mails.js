@@ -1,5 +1,5 @@
 
-📋 Copier tout le code (v9.3)
+
 /* ============================================================
    CDL — Lecteur de boite mail  ·  v9.3  ·  LECTURE SEULE (IMAP)
    (v9.3 : publication Instagram — attend que la photo soit prete (status_code
