@@ -1,6 +1,12 @@
 
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v9.4  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v9.5  ·  LECTURE SEULE (IMAP)
+   (v9.5 : LIAISON READY — chaque « Achat magasin » photographie dans l'app
+    Ready devient tout seul une piece d'achat CDL : photo copiee dans le bucket
+    pieces/achats/, analysee par l'assistant avec les indices de l'equipe
+    (magasin, montant) ; sans photo, piece pre-remplie a valider. Heures et
+    frais de route gardent leur circuit. Regle maison : les photos de tickets
+    se prennent DANS READY.)
    (v9.4 : ANALYSE DES PIECES D'ACHAT — un ticket photographie ou une facture
     fournisseur (table achats, statut a_analyser, fichier bucket pieces/achats/)
     est LU par l'assistant (vision/PDF) : fournisseur, date, HT/TVA/TTC, taux,
@@ -1163,7 +1169,10 @@ Reponds UNIQUEMENT avec un objet JSON, sans commentaire :
  "description":"en quelques mots ce qui a ete achete"}
 Regles : n'invente RIEN — si un montant est illisible mets 0 ; si HT absent mais
 TTC et taux lisibles, calcule-le ; la date au format AAAA-MM-JJ.`;
-    const texte = await appelerClaude(MODELE_REDACTION, consigne, [bloc, { type: "text", text: "Voici la piece a lire." }], 700);
+    const texte = await appelerClaude(MODELE_REDACTION, consigne, [bloc, {
+      type: "text",
+      text: "Voici la piece a lire." + (don.indices ? `\nIndices donnes par l'equipe (a verifier sur la piece, la piece fait foi) : ${don.indices}` : ""),
+    }], 700);
     const objet = JSON.parse(texte.slice(texte.indexOf("{"), texte.lastIndexOf("}") + 1));
     await maj({
       statut: "a_valider",
@@ -1181,6 +1190,65 @@ TTC et taux lisibles, calcule-le ; la date au format AAAA-MM-JJ.`;
   }
 }
 const nombreSur = (v) => { const n = parseFloat(String(v == null ? "" : v).replace(",", ".")); return isNaN(n) ? 0 : Math.round(n * 100) / 100; };
+
+/* ---------- Liaison Ready -> compta (v9.5) ----------
+   Les tickets se photographient dans l'app Ready (« Achat magasin ») : chaque
+   depense de la table 'depenses' qui n'est pas encore reliee devient une piece
+   d'achat CDL — la photo (data-URL) est rangee dans le bucket pieces/achats/
+   puis analysee ; sans photo, la piece arrive pre-remplie a valider.
+   Les lignes « Heures ... » et « Frais de route ... » (paie) sont laissees
+   a leur circuit actuel. */
+const dateFrVersIso = (d) => {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})/.exec(String(d || ""));
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : String(d || "").slice(0, 10);
+};
+
+let liaisonReadyEnCours = 0;
+async function lierDepensesReady() {
+  if (!tableAchatsOK || verrouPose(liaisonReadyEnCours)) return;
+  liaisonReadyEnCours = Date.now();
+  try {
+    const { data: dejas } = await supabase.from("achats").select("donnees")
+      .not("donnees->>depenseId", "is", null).limit(2000);
+    const lies = new Set((dejas || []).map((r) => String((r.donnees || {}).depenseId)));
+    const { data: deps } = await supabase.from("depenses")
+      .select("id, par, magasin, montant, commentaire, date, statut").limit(1000);
+    for (const d of deps || []) {
+      if (lies.has(String(d.id))) continue;
+      const libelle = d.magasin || "";
+      if (/^Heures |^Frais de route /.test(libelle)) continue;
+      const id = "ac_ready_" + d.id;
+      const don = {
+        id, depenseId: d.id, source: "ready", par: d.par || "",
+        fournisseur: libelle, ttc: nombreSur(d.montant), date: dateFrVersIso(d.date),
+        creeLe: new Date().toISOString().slice(0, 10),
+        indices: `saisi dans Ready par ${d.par || "?"} — magasin « ${libelle || "?"} », montant ${d.montant || "?"} EUR TTC, le ${d.date || "?"}${d.commentaire ? ", commentaire : " + d.commentaire : ""}`,
+      };
+      const { data: ph } = await supabase.from("depenses").select("photo").eq("id", d.id).maybeSingle();
+      const photo = ph && ph.photo;
+      const m = photo && /^data:(image\/\w+);base64,(.+)$/.exec(photo);
+      if (m) {
+        const chemin = `achats/ready-${d.id}.jpg`;
+        const { error: eUp } = await supabase.storage.from("pieces")
+          .upload(chemin, Buffer.from(m[2], "base64"), { contentType: m[1], upsert: true });
+        if (!eUp) { don.chemin = chemin; don.typeMime = m[1]; }
+      }
+      if (don.chemin) {
+        don.statut = "a_analyser";
+      } else {
+        don.statut = "a_valider";
+        don.categorie = "Autre"; don.ht = 0; don.tva = 0; don.tauxTva = 0; don.moyen = "";
+        don.note = "Saisie Ready sans photo lisible — completez et validez.";
+      }
+      const { error: eIns } = await supabase.from("achats").insert({ id, donnees: don, modifie_le: new Date().toISOString() });
+      if (!eIns) console.log(`Depense Ready ${d.id} (${libelle || "?"}) reliee a la compta${don.chemin ? " avec photo" : ""}.`);
+    }
+  } catch (e) {
+    console.log("  ! Liaison depenses Ready :", e.message);
+  } finally {
+    liaisonReadyEnCours = 0;
+  }
+}
 
 let achatsEnCours = 0;
 async function traiterAchats() {
@@ -1597,7 +1665,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v9.4 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v9.5 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
@@ -1625,6 +1693,7 @@ async function cycle() {
   setInterval(traiterPostsReseaux, 30000);
   setInterval(traiterPublications, 45000);
   setInterval(traiterAchats, 40000);
+  setInterval(lierDepensesReady, 60000);
   console.log(JETON_IG_ENV
     ? "Publication Instagram active (compte @domainedelacourdeslys)."
     : "Publication Instagram en veille (INSTAGRAM_TOKEN absent).");
