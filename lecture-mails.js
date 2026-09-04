@@ -1,4 +1,4 @@
-l
+
 /* ============================================================
    CDL — Lecteur de boite mail  ·  v9.7  ·  LECTURE SEULE (IMAP)
    (v9.7 : VENTILATION SUR UNE SEULE LIGNE — un ticket qui melange plusieurs
