@@ -1,4 +1,4 @@
-.4)
+
 /* ============================================================
    CDL — Lecteur de boite mail  ·  v9.4  ·  LECTURE SEULE (IMAP)
    (v9.4 : ANALYSE DES PIECES D'ACHAT — un ticket photographie ou une facture
