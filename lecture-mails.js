@@ -1,6 +1,11 @@
-
+.7)
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v9.5  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v9.7  ·  LECTURE SEULE (IMAP)
+   (v9.7 : VENTILATION SUR UNE SEULE LIGNE — un ticket qui melange plusieurs
+    categories reste UN ticket : les parts par categorie sont rangees dans
+    donnees.ventilation (sous-lignes depliables dans CDL), les totaux de la
+    ligne = la somme des parts. L'export cabinet en fait une seule piece
+    avec une ligne de charge par categorie.)
    (v9.5 : LIAISON READY — chaque « Achat magasin » photographie dans l'app
     Ready devient tout seul une piece d'achat CDL : photo copiee dans le bucket
     pieces/achats/, analysee par l'assistant avec les indices de l'equipe
@@ -1168,22 +1173,48 @@ Reponds UNIQUEMENT avec un objet JSON, sans commentaire :
  "moyen":"CB, Especes, Cheque, Virement, Prelevement ou vide si illisible",
  "description":"en quelques mots ce qui a ete achete"}
 Regles : n'invente RIEN — si un montant est illisible mets 0 ; si HT absent mais
-TTC et taux lisibles, calcule-le ; la date au format AAAA-MM-JJ.`;
+TTC et taux lisibles, calcule-le ; la date au format AAAA-MM-JJ.
+Si le ticket melange NETTEMENT plusieurs categories (ex. courses alimentaires +
+produits d'entretien + petit materiel), ajoute en plus :
+"ventilation":[{"categorie":"...","ht":n,"tva":n,"ttc":n}, ...] (2 a 4 parts,
+categories de la liste, la somme des parts = les totaux du ticket) ;
+sinon, omets "ventilation".`;
     const texte = await appelerClaude(MODELE_REDACTION, consigne, [bloc, {
       type: "text",
       text: "Voici la piece a lire." + (don.indices ? `\nIndices donnes par l'equipe (a verifier sur la piece, la piece fait foi) : ${don.indices}` : ""),
     }], 700);
     const objet = JSON.parse(texte.slice(texte.indexOf("{"), texte.lastIndexOf("}") + 1));
-    await maj({
-      statut: "a_valider",
+    const commun = {
       fournisseur: String(objet.fournisseur || ""), date: String(objet.date || "").slice(0, 10),
-      ht: nombreSur(objet.ht), tva: nombreSur(objet.tva), ttc: nombreSur(objet.ttc),
-      tauxTva: nombreSur(objet.tauxTva), categorie: CATEGORIES_ACHAT.includes(objet.categorie) ? objet.categorie : "Autre",
-      moyen: String(objet.moyen || ""), description: String(objet.description || ""),
-      note: "Analysé par l'assistant — vérifiez les montants avant de valider.",
-      erreur: "",
-    });
-    console.log(`Piece d'achat analysee (${row.id}) : ${objet.fournisseur || "?"} ${objet.ttc || "?"} EUR.`);
+      tauxTva: nombreSur(objet.tauxTva), moyen: String(objet.moyen || ""),
+      description: String(objet.description || ""), erreur: "",
+    };
+    /* v9.6 : un ticket qui melange plusieurs categories est VENTILE — une ligne
+       par categorie, meme photo, sommes exactes du ticket. */
+    const vent = (Array.isArray(objet.ventilation) ? objet.ventilation : [])
+      .map((v) => ({ categorie: CATEGORIES_ACHAT.includes(v.categorie) ? v.categorie : "Autre",
+        ht: nombreSur(v.ht), tva: nombreSur(v.tva), ttc: nombreSur(v.ttc) }))
+      .filter((v) => v.ttc > 0);
+    if (vent.length >= 2) {
+      /* v9.7 : UNE seule ligne pour le ticket — les categories vivent dans
+         'ventilation' (sous-parts depliables dans CDL), totaux = somme. */
+      const somme = (k) => Math.round(vent.reduce((s, p) => s + p[k], 0) * 100) / 100;
+      await maj({
+        statut: "a_valider", ...commun,
+        ventilation: vent, categorie: vent[0].categorie,
+        ht: somme("ht"), tva: somme("tva"), ttc: somme("ttc"),
+        note: `Ticket multi-catégories : ${vent.length} parts lues sur le ticket — dépliez 🧾 pour vérifier la répartition.`,
+      });
+      console.log(`Piece d'achat analysee et ventilee en ${vent.length} parts (${row.id}) : ${objet.fournisseur || "?"}.`);
+    } else {
+      await maj({
+        statut: "a_valider", ...commun,
+        ht: nombreSur(objet.ht), tva: nombreSur(objet.tva), ttc: nombreSur(objet.ttc),
+        categorie: CATEGORIES_ACHAT.includes(objet.categorie) ? objet.categorie : "Autre",
+        note: "Analysé par l'assistant — vérifiez les montants avant de valider.",
+      });
+      console.log(`Piece d'achat analysee (${row.id}) : ${objet.fournisseur || "?"} ${objet.ttc || "?"} EUR.`);
+    }
   } catch (e) {
     console.log("  ! Analyse achat :", e.message);
     await maj({ statut: "erreur", erreur: "L'assistant n'a pas réussi : " + e.message });
@@ -1665,7 +1696,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v9.5 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v9.7 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
