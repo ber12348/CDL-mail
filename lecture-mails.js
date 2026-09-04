@@ -1,6 +1,439 @@
+.4)
+/* ============================================================
+   CDL — Lecteur de boite mail  ·  v9.4  ·  LECTURE SEULE (IMAP)
+   (v9.4 : ANALYSE DES PIECES D'ACHAT — un ticket photographie ou une facture
+    fournisseur (table achats, statut a_analyser, fichier bucket pieces/achats/)
+    est LU par l'assistant (vision/PDF) : fournisseur, date, HT/TVA/TTC, taux,
+    categorie, moyen — puis passe en a_valider dans l'onglet Compta de CDL.
+    Validation humaine obligatoire, rien ne part tout seul.)
+   (v9.3 : publication Instagram — attend que la photo soit prete (status_code
+    FINISHED, jusqu'a 60 s) avant media_publish ; corrige « The media is not
+    ready for publishing » du 03/09.)
+   (v9.2 : CONSEILS DE POSTS — chaque semaine (ou via le bouton 🔄 de la page),
+    le lecteur croise le planning reel — week-ends a vendre, semaines pro vides —
+    avec la ligne editoriale et propose 5 idees ciblees, rangees dans la ligne
+    'conseils_reseaux' de posts_reseaux. REGLE CLIENT : les disponibilites ne
+    sont JAMAIS publiees, elles ne servent qu'a choisir les themes en interne.
+    Corrige aussi la ligne jeton_instagram : l'id est desormais DANS donnees,
+    sinon un enregistrement depuis la page pouvait l'effacer.)
+   (v9.1 : CALENDRIER — les posts Instagram en statut 'programme' partent tout
+    seuls a la date et l'heure prevues, heure de Paris ; un creneau manque de
+    plus de 3 jours revient en brouillon avec explication au lieu de surgir
+    a contretemps. LinkedIn/Google restent manuels, signales par la page.)
+   (v9.0 : PUBLICATION INSTAGRAM — le bouton « Publier sur Instagram » de la page
+    Reseaux passe le post en 'a_publier', le lecteur l'envoie via l'API Instagram
+    (jeton INSTAGRAM_TOKEN dans Render, rafraichi chaque semaine tout seul,
+    copie fraiche dans la ligne 'jeton_instagram' de posts_reseaux) ; en cas
+    d'echec le post revient en brouillon avec le motif ; lien « Voir sur
+    Instagram » range dans le post apres publication.)
+   (v8.11 : l'assistant REGARDE la photo du post — l'image publique du bucket
+    'reseaux' est jointe a l'appel IA ; le texte decrit ce qu'elle montre vraiment,
+    au lieu d'etre invente depuis le nom de fichier.)
+   (v8.10 : LA vraie cause de la panne du 28/08 — les files posts/demandes/envois
+    ne lisaient que les 50 ou 20 premieres lignes de leur table ; des que la
+    phototheque a depasse 50 lignes, les posts a rediger devenaient invisibles.
+    Desormais c'est la base qui filtre par statut.)
+   (v8.9 : plus de blocage silencieux — l'appel a l'assistant IA est limite a 90 s,
+    et un verrou oublie par un appel suspendu saute tout seul apres 10 min)
+   (v8.8 : un mariage CONFIRME recoit automatiquement son code espace maries — jamais les options)
+   (v8.6 : classement affine — mots de passe/promos hors Compta, demandes de devis en prospect —
+    et mails tout-HTML rendus lisibles ;
+    v8.7 : les documents reconnus — attestation d'assurance, rooming, fiche mobilier,
+    devis signe — cochent automatiquement la fiche de l'evenement)
+   (v8.2 : un devis mariage est TOUJOURS recale du vendredi 14 h au dimanche 18 h ;
+    v8.3 : mode « ajuster un devis existant » + envoi des devis par mail, file envois_mails ;
+    v8.4 : redaction des posts reseaux, file posts_reseaux, onglet Reseaux de CDL ;
+    v8.5 : les notes du premier contact de la fiche nourrissent le devis de l'assistant)
+   ------------------------------------------------------------
+   Nouveau en v8 :
+     • fabrique de devis : surveille la table "demandes_devis"
+       (bouton « Demander à l'assistant » dans CDL, onglet Finance).
+       Claude monte le devis depuis la bibliotheque d'articles
+       (jamais de prix inventes pour un article du catalogue) et le
+       range en BROUILLON dans la table "devis". RIEN ne part au
+       client : l'equipe relit, imprime et envoie elle-meme.
+     • la sauvegarde hebdomadaire couvre aussi les tables du
+       planning et des devis (evenements, espaces, articles, devis,
+       reglages, maries_acces, demandes_devis).
+     • si la table "demandes_devis" n'existe pas encore, tout
+       fonctionne comme en v7 (verification a chaque cycle).
+   Nouveau en v7 :
+     • sauvegarde automatique : chaque dimanche soir (ou des que
+       la derniere sauvegarde a plus de 8 jours), le lecteur
+       exporte TOUTES les tables (CDL + Ready) en un fichier JSON
+       et se l'envoie par mail a la boite du Domaine. La copie de
+       secours vit ainsi chez OVH, hors de Supabase.
+     • premier export envoye immediatement au premier demarrage.
+     • jalon de sauvegarde memorise dans mails_etat (ligne id=2),
+       sans aucune modification de schema.
+   Nouveau en v6 :
+     • les pieces jointes sont rangees dans Supabase Storage
+       (coffre "pieces") et deviennent ouvrables depuis CDL.
+       Au-dela de 15 Mo, seul le nom est garde, comme avant.
+     • classement : l'annuaire des dossiers est consulte AVANT
+       la regle "compta par expediteur" (une cliente ecrivant
+       depuis sa banque n'est plus prise pour une facture), et
+       les codes/notifications ne sont plus detectes que dans
+       l'objet du mail (moins de faux "technique").
+     • si le coffre "pieces" n'existe pas encore, tout fonctionne
+       comme en v5 (verification a chaque cycle).
+   Nouveau en v5 :
+     • repond aux mails depuis CDL : surveille la table "reponses"
+       (Supabase). Quand l'equipe demande un brouillon, Claude le
+       redige ; quand l'equipe valide, l'envoi part par SMTP OVH.
+       RIEN ne part sans validation humaine dans l'interface.
+     • la boite reste en LECTURE SEULE cote IMAP : l'envoi passe
+       par SMTP, un canal separe qui ne touche pas aux mails recus.
+     • le Message-ID des nouveaux mails est memorise (colonne
+       message_id) pour que les reponses s'attachent au bon fil.
+     • si la table "reponses" ou la colonne "message_id" n'existent
+       pas encore, tout fonctionne comme en v4 (verification a
+       chaque cycle : passer le SQL suffit, sans redeployer).
+   Nouveau en v4 :
+     • quand les regles ne reconnaissent rien, le mail est soumis
+       a Claude (Haiku) qui lit le message et propose un classement
+     • les regles restent prioritaires : l'IA n'est appelee que
+       sur les mails qui finiraient en "a classer" (peu d'appels)
+     • si la cle ANTHROPIC_API_KEY est absente, tout fonctionne
+       exactement comme en v3.2
+   Ne supprime, ne deplace et ne modifie JAMAIS un mail recu.
+   ============================================================ */
+const { ImapFlow } = require("imapflow");
+const { simpleParser } = require("mailparser");
+const { createClient } = require("@supabase/supabase-js");
+const nodemailer = require("nodemailer");
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+const FREQ = Math.max(1, parseInt(process.env.FREQUENCE_MINUTES || "3", 10)) * 60 * 1000;
+
+/* ---------- Envoi SMTP (reponses validees) ---------- */
+const SMTP_HOST = process.env.SMTP_HOST || process.env.IMAP_HOST;
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || "465", 10);
+const SIGNATURE = process.env.SIGNATURE || "L'equipe du Domaine de la Cour des Lys";
+const EXPEDITEUR_NOM = process.env.EXPEDITEUR_NOM || "Domaine de la Cour des Lys";
+
+const smtp = nodemailer.createTransport({
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  secure: SMTP_PORT === 465,
+  auth: { user: process.env.MAIL_UTILISATEUR, pass: process.env.MAIL_MOT_DE_PASSE },
+});
+
+/* ---------- Sauvegarde hebdomadaire par mail ---------- */
+const SAUVEGARDE_DEST = process.env.SAUVEGARDE_DEST || process.env.MAIL_UTILISATEUR;
+const JOUR_SAUVEGARDE = parseInt(process.env.SAUVEGARDE_JOUR || "0", 10); // 0 = dimanche
+const TABLES_SAUVEGARDE = ["mails", "mails_etat", "dossiers", "reponses", "depenses",
+  "trajets", "plannings", "equipe", "mois_arretes", "dossier_pieces", "taches",
+  "besoins", "journal", "fiches_perso", "rondes_en_cours", "horaires_defaut",
+  "evenements", "espaces", "articles", "devis", "reglages", "maries_acces", "demandes_devis", "envois_mails", "posts_reseaux"];
+
+async function toutLire(table) {
+  const lignes = [];
+  for (let de = 0; ; de += 1000) {
+    const { data, error } = await supabase.from(table).select("*").range(de, de + 999);
+    if (error) return { lignes, erreur: error.message };
+    lignes.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return { lignes };
+}
+
+async function sauvegarder() {
+  const contenu = { exporte_le: new Date().toISOString(), origine: "CDL lecteur v8", tables: {} };
+  const resume = [];
+  for (const t of TABLES_SAUVEGARDE) {
+    const { lignes, erreur } = await toutLire(t);
+    if (erreur && !lignes.length) { resume.push(`${t} : indisponible (${erreur})`); continue; }
+    contenu.tables[t] = lignes;
+    resume.push(`${t} : ${lignes.length} ligne(s)`);
+  }
+  const json = JSON.stringify(contenu);
+  const jour = new Date().toISOString().slice(0, 10);
+
+  await smtp.sendMail({
+    from: `"${EXPEDITEUR_NOM}" <${process.env.MAIL_UTILISATEUR}>`,
+    to: SAUVEGARDE_DEST,
+    subject: `CDL — Sauvegarde des donnees (${jour})`,
+    text: `Sauvegarde automatique de la base CDL/Ready, generee par le lecteur.\n\n${resume.join("\n")}\n\nCe fichier permet de tout restaurer si la base venait a disparaitre.\nConservez ce mail : il constitue votre copie de secours hors Supabase.`,
+    attachments: [{ filename: `sauvegarde-cdl-${jour}.json`, content: json }],
+  });
+
+  await supabase.from("mails_etat").upsert({ id: 2, derniere_verif: new Date() });
+  console.log(`Sauvegarde envoyee a ${SAUVEGARDE_DEST} (${Math.round(json.length / 1024)} Ko, ${resume.length} tables).`);
+}
+
+/* Un verrou de file est un horodatage : s'il reste pose plus de 10 min
+   (appel suspendu qui n'a jamais rendu la main), il saute tout seul. */
+const VERROU_MAX = 10 * 60 * 1000;
+const verrouPose = (v) => v && Date.now() - v < VERROU_MAX;
+
+let sauvegardeEnCours = 0;
+async function verifierSauvegarde() {
+  if (verrouPose(sauvegardeEnCours)) return;
+  sauvegardeEnCours = Date.now();
+  try {
+    const { data } = await supabase.from("mails_etat").select("derniere_verif").eq("id", 2).single();
+    const derniere = data && data.derniere_verif ? new Date(data.derniere_verif) : null;
+    const ageJours = derniere ? (Date.now() - derniere.getTime()) / 86400000 : Infinity;
+    const maintenant = new Date();
+    const cEstLHeure = maintenant.getDay() === JOUR_SAUVEGARDE && maintenant.getHours() >= 18 && ageJours >= 1;
+    if (ageJours >= 8 || cEstLHeure) await sauvegarder();
+  } catch (e) {
+    console.log("  ! Sauvegarde :", e.message, "— nouvel essai au prochain cycle.");
+  } finally {
+    sauvegardeEnCours = 0;
+  }
+}
+
+/* ---------- Rangement des pieces jointes (Supabase Storage) ---------- */
+const BUCKET = process.env.BUCKET_PIECES || "pieces";
+const TAILLE_MAX_PJ = parseInt(process.env.TAILLE_MAX_PJ_MO || "15", 10) * 1024 * 1024;
+
+/* Etat des extensions (re-verifie a chaque cycle tant que faux) */
+let tableReponsesOK = false;
+let colonneMessageIdOK = false;
+let bucketOK = false;
+let tableDemandesOK = false;
+let tableEnvoisOK = false;
+let tablePostsOK = false;
+let avertissementReponses = false;
+let avertissementBucket = false;
+let avertissementDemandes = false;
+let avertissementEnvois = false;
+let avertissementPosts = false;
+
+async function verifierExtensionsV5() {
+  if (!bucketOK) {
+    const { error } = await supabase.storage.from(BUCKET).list("", { limit: 1 });
+    if (!error) {
+      bucketOK = true;
+      console.log(`Pieces jointes : coffre '${BUCKET}' trouve, rangement actif.`);
+    } else if (!avertissementBucket) {
+      avertissementBucket = true;
+      console.log(`Pieces jointes : coffre '${BUCKET}' absent — seuls les noms sont gardes (passer le SQL pour l'activer).`);
+    }
+  }
+  if (!tableReponsesOK) {
+    const { error } = await supabase.from("reponses").select("id").limit(1);
+    if (!error) {
+      tableReponsesOK = true;
+      console.log("Reponses depuis CDL : table 'reponses' trouvee, envoi active.");
+    } else if (!avertissementReponses) {
+      avertissementReponses = true;
+      console.log("Reponses depuis CDL : table 'reponses' absente — fonction en veille (passer le SQL pour l'activer).");
+    }
+  }
+  if (!colonneMessageIdOK) {
+    const { error } = await supabase.from("mails").select("message_id").limit(1);
+    if (!error) colonneMessageIdOK = true;
+  }
+  if (!tableDemandesOK) {
+    const { error } = await supabase.from("demandes_devis").select("id").limit(1);
+    if (!error) {
+      tableDemandesOK = true;
+      console.log("Fabrique de devis : table 'demandes_devis' trouvee, assistant actif.");
+    } else if (!avertissementDemandes) {
+      avertissementDemandes = true;
+      console.log("Fabrique de devis : table 'demandes_devis' absente — en veille (passer le SQL pour l'activer).");
+    }
+  }
+  if (!tableEnvoisOK) {
+    const { error } = await supabase.from("envois_mails").select("id").limit(1);
+    if (!error) {
+      tableEnvoisOK = true;
+      console.log("Envoi de devis : table 'envois_mails' trouvee, envoi par mail actif.");
+    } else if (!avertissementEnvois) {
+      avertissementEnvois = true;
+      console.log("Envoi de devis : table 'envois_mails' absente — en veille (passer le SQL pour l'activer).");
+    }
+  }
+  if (!tablePostsOK) {
+    const { error } = await supabase.from("posts_reseaux").select("id").limit(1);
+    if (!error) {
+      tablePostsOK = true;
+      console.log("Reseaux : table 'posts_reseaux' trouvee, redaction des posts active.");
+    } else if (!avertissementPosts) {
+      avertissementPosts = true;
+      console.log("Reseaux : table 'posts_reseaux' absente — en veille (passer le SQL pour l'activer).");
+    }
+  }
+  if (!tableAchatsOK) {
+    const { error } = await supabase.from("achats").select("id").limit(1);
+    if (!error) {
+      tableAchatsOK = true;
+      console.log("Compta : table 'achats' trouvee, analyse des pieces active.");
+    } else if (!avertissementAchats) {
+      avertissementAchats = true;
+      console.log("Compta : table 'achats' absente — en veille (passer sql/achats.sql pour l'activer).");
+    }
+  }
+}
+let tableAchatsOK = false;
+let avertissementAchats = false;
+
+/* ---------- Adresses a ne JAMAIS traiter comme un dossier ---------- */
+const GENERIQUES = [
+  "mariages.net", "mariage.net", "lab-event", "labevent", "bridebook",
+  "zankyou", "1001salles", "abcsalles", "domainedelacourdeslys",
+  "noreply", "no-reply", "ne-pas-repondre", "nepasrepondre",
+  "notify@", "notification", "postmaster", "mailer-daemon",
+];
+const estGenerique = (a) => GENERIQUES.some((g) => (a || "").includes(g));
+
+/* ---------- Annuaire des dossiers ---------- */
+let ANNUAIRE = new Map();
+
+async function chargerAnnuaire() {
+  const { data, error } = await supabase
+    .from("dossiers")
+    .select("nom, contact, email, statut, type_client, titre_projet, date_debut")
+    .limit(2000);
+
+  if (error) {
+    console.log("  ! Annuaire indisponible :", error.message);
+    return;
+  }
+
+  const rang = { client: 0, prospect: 1, perdu: 2 };
+  const map = new Map();
+  let ecartes = 0;
+  for (const d of data || []) {
+    const cle = (d.email || "").trim().toLowerCase();
+    if (!cle) continue;
+    if (estGenerique(cle)) { ecartes++; continue; }
+    const actuel = map.get(cle);
+    if (!actuel || rang[d.statut] < rang[actuel.statut]) map.set(cle, d);
+  }
+  ANNUAIRE = map;
+  console.log(`Annuaire charge : ${ANNUAIRE.size} adresses connues${ecartes ? ` (${ecartes} adresse(s) generique(s) ecartee(s))` : ""}.`);
+}
+
+/* ---------- Fiches événements : reconnaissance des documents reçus ----------
+   Quand un client identifié envoie une pièce jointe reconnaissable (attestation
+   d'assurance, rooming list, fiche mobilier, devis signé), la case correspondante
+   de sa fiche est cochée automatiquement. On ne décoche JAMAIS. */
+let EVTS_PAR_EMAIL = new Map();
+
+async function chargerEvenements() {
+  const { data, error } = await supabase.from("evenements").select("id, donnees").limit(2000);
+  if (error) { console.log("  ! Fiches evenements indisponibles :", error.message); return; }
+  const map = new Map();
+  for (const l of data || []) {
+    const d = l.donnees || {};
+    if (d.statut === "annule" || d.statut === "bloque") continue;
+    const adresses = [d.email].concat((d.maries || []).map((m) => m && m.email))
+      .map((a) => (a || "").trim().toLowerCase()).filter(Boolean);
+    for (const a of adresses) {
+      const actuel = map.get(a);
+      if (!actuel || (d.dateDebut || "") > ((actuel.donnees || {}).dateDebut || "")) map.set(a, l);
+    }
+  }
+  EVTS_PAR_EMAIL = map;
+}
+
+function reconnaitreDocuments(objet, corps, nomsPieces) {
+  const texte = ((objet || "") + " " + (corps || "")).toLowerCase();
+  const noms = nomsPieces.join(" ").toLowerCase();
+  const tout = noms + " " + texte;
+  if (!nomsPieces.length) return [];
+  const docs = [];
+  if (/attestation|assurance|responsabilite civile|responsabilité civile|villegiature|villégiature/.test(tout)) docs.push("assurance");
+  if (/rooming/.test(tout)) docs.push("rooming");
+  if (/fiche[ _-]?mobilier|liste[ _-]?mobilier/.test(tout)) docs.push("mobilier");
+  if (/devis[\s\S]{0,40}sign|sign[\s\S]{0,30}devis/.test(tout) || (/dev-\d{4}-\d+/.test(noms) && /sign/.test(tout))) docs.push("devisSigne");
+  return docs;
+}
+
+async function cocherDocumentsFiche(mail, nomsPieces) {
+  const ligne = EVTS_PAR_EMAIL.get((mail.expediteur_email || "").toLowerCase());
+  if (!ligne) return null;
+  const reconnus = reconnaitreDocuments(mail.objet, mail.corps, nomsPieces);
+  if (!reconnus.length) return null;
+  const LIBS = { assurance: "attestation d'assurance", rooming: "rooming list", mobilier: "fiche mobilier", devisSigne: "devis signé" };
+  const d = { ...ligne.donnees };
+  const jour = new Date().toISOString().slice(0, 10);
+  const faits = [];
+  for (const r of reconnus) {
+    if (r === "devisSigne") {
+      if (!d.devisSigneRecu) { d.devisSigneRecu = true; d.devisSigneDate = jour; faits.push(LIBS[r]); }
+    } else {
+      d.documents = { ...(d.documents || {}) };
+      if (!(d.documents[r] && d.documents[r].recu)) {
+        d.documents[r] = { ...(d.documents[r] || {}), recu: true, date: jour, source: "mail" };
+        faits.push(LIBS[r]);
+      }
+    }
+  }
+  if (!faits.length) return null;
+  const { error } = await supabase.from("evenements")
+    .update({ donnees: d, modifie_le: new Date().toISOString() }).eq("id", ligne.id);
+  if (error) { console.log("  ! Coche fiche impossible :", error.message); return null; }
+  ligne.donnees = d;
+  console.log(`  + Fiche ${d.client || ligne.id} : ${faits.join(", ")} coche(s) automatiquement.`);
+  return faits;
+}
+
+/* ---------- Espace maries : attribution automatique des codes ----------
+   Regle maison (28/08/2026) : un code par mariage CONFIRME uniquement —
+   pas pour les options. Le code apparait dans la fiche du couple ; on ne
+   regenere jamais un code existant. */
+async function attribuerCodesMaries() {
+  const { data, error } = await supabase.from("evenements").select("id, donnees").limit(2000);
+  if (error) return;
+  const slug = (s) => String(s || "maries").toLowerCase().normalize("NFD")
+    .split("").filter((c) => c.charCodeAt(0) < 0x300 || c.charCodeAt(0) > 0x36f).join("")
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  for (const e of data || []) {
+    const d = e.donnees || {};
+    if (d.categorie !== "mariage" || d.statut !== "confirme" || d.codeMaries) continue;
+    const code = slug(d.client) + "-" + Math.random().toString(36).slice(2, 6);
+    const ins = await supabase.from("maries_acces").insert({ code, evenement_id: e.id });
+    if (ins.error) { console.log("  ! Code maries refuse :", ins.error.message); continue; }
+    await supabase.from("evenements")
+      .update({ donnees: { ...d, codeMaries: code }, modifie_le: new Date().toISOString() })
+      .eq("id", e.id);
+    console.log(`  + Espace maries ouvert pour ${d.client || e.id} : ${code}`);
+  }
+}
+
+/* ---------- Plateformes d'apport d'affaires ---------- */
+const PLATEFORMES = ["mariages.net", "mariage.net", "lab-event", "labevent",
+  "bridebook", "zankyou", "1001salles", "abcsalles"];
+
+function adresseDansCorps(corps) {
+  if (!corps) return null;
+  const trouvees = corps.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) || [];
+  for (const a of trouvees) {
+    const propre = a.toLowerCase().replace(/[.,;)>\]]+$/, "");
+    if (!estGenerique(propre) && !/sentry|wixpress|sendgrid|mailchimp|amazonses/.test(propre)) return propre;
+  }
+  return null;
+}
 
 
-: consigne,
+/* ---------- Appels a l'API Anthropic ---------- */
+const CLE_IA = process.env.ANTHROPIC_API_KEY || "";
+const MODELE_IA = process.env.MODELE_IA || "claude-haiku-4-5-20251001";
+const MODELE_REDACTION = process.env.MODELE_REDACTION || "claude-sonnet-4-6";
+let compteurIA = 0;
+
+/* Un appel qui ne repond pas en 90 s est abandonne : sans cela, une seule requete
+   suspendue gardait le verrou de sa file pour toujours (panne du 28/08). */
+const DELAI_IA = 90000;
+
+async function appelerClaude(modele, consigne, message, maxTokens) {
+  const reponse = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    signal: AbortSignal.timeout(DELAI_IA),
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": CLE_IA,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: modele,
+      max_tokens: maxTokens,
+      system: consigne,
       messages: [{ role: "user", content: message }],
     }),
   });
@@ -690,6 +1123,80 @@ async function traiterPostsReseaux() {
   }
 }
 
+/* ---------- Analyse des pieces d'achat (v9.4) ----------
+   Un ticket de caisse photographie ou une facture fournisseur (bucket 'pieces',
+   dossier achats/) arrive en statut 'a_analyser' : l'assistant LIT la piece
+   (vision / PDF) et remplit l'ecriture — fournisseur, date, HT/TVA/TTC, taux,
+   categorie — puis la passe en 'a_valider'. RIEN ne part en compta sans
+   validation humaine dans l'onglet Compta de CDL. */
+const CATEGORIES_ACHAT = ["Alimentation & boissons", "Entretien & travaux", "Fournitures",
+  "Energie & fluides", "Sous-traitance", "Deco & fleurs", "Carburant & deplacements",
+  "Petit equipement", "Abonnements & services", "Autre"];
+
+async function analyserAchat(row) {
+  const don = row.donnees || {};
+  const maj = (champs) => supabase.from("achats").update({
+    donnees: { ...don, ...champs },
+    modifie_le: new Date().toISOString(),
+  }).eq("id", row.id);
+  try {
+    if (!don.chemin) throw new Error("pas de fichier attache");
+    const { data: fichier, error } = await supabase.storage.from("pieces").download(don.chemin);
+    if (error || !fichier) throw new Error("piece introuvable dans le bucket" + (error ? " : " + error.message : ""));
+    const tampon = Buffer.from(await fichier.arrayBuffer());
+    if (tampon.length > 8 * 1024 * 1024) throw new Error("piece trop lourde pour l'analyse (8 Mo max)");
+    const estPdf = /\.pdf$/i.test(don.chemin) || (don.typeMime || "").includes("pdf");
+    const bloc = estPdf
+      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: tampon.toString("base64") } }
+      : { type: "image", source: { type: "base64", media_type: (don.typeMime || "").startsWith("image/") ? don.typeMime : "image/jpeg", data: tampon.toString("base64") } };
+    const consigne = `Tu lis les pieces comptables d'achat du Domaine de la Cour des Lys (lieu de
+receptions en Normandie) : tickets de caisse, factures fournisseurs.
+Reponds UNIQUEMENT avec un objet JSON, sans commentaire :
+{"fournisseur":"nom du magasin ou fournisseur",
+ "date":"AAAA-MM-JJ (date de la piece)",
+ "ht":total HT en euros (nombre),
+ "tva":total TVA en euros (nombre),
+ "ttc":total TTC en euros (nombre),
+ "tauxTva":taux principal en % (5.5, 10 ou 20 ; 0 si sans TVA),
+ "categorie":"une SEULE parmi : ${CATEGORIES_ACHAT.join(" | ")}",
+ "moyen":"CB, Especes, Cheque, Virement, Prelevement ou vide si illisible",
+ "description":"en quelques mots ce qui a ete achete"}
+Regles : n'invente RIEN — si un montant est illisible mets 0 ; si HT absent mais
+TTC et taux lisibles, calcule-le ; la date au format AAAA-MM-JJ.`;
+    const texte = await appelerClaude(MODELE_REDACTION, consigne, [bloc, { type: "text", text: "Voici la piece a lire." }], 700);
+    const objet = JSON.parse(texte.slice(texte.indexOf("{"), texte.lastIndexOf("}") + 1));
+    await maj({
+      statut: "a_valider",
+      fournisseur: String(objet.fournisseur || ""), date: String(objet.date || "").slice(0, 10),
+      ht: nombreSur(objet.ht), tva: nombreSur(objet.tva), ttc: nombreSur(objet.ttc),
+      tauxTva: nombreSur(objet.tauxTva), categorie: CATEGORIES_ACHAT.includes(objet.categorie) ? objet.categorie : "Autre",
+      moyen: String(objet.moyen || ""), description: String(objet.description || ""),
+      note: "Analysé par l'assistant — vérifiez les montants avant de valider.",
+      erreur: "",
+    });
+    console.log(`Piece d'achat analysee (${row.id}) : ${objet.fournisseur || "?"} ${objet.ttc || "?"} EUR.`);
+  } catch (e) {
+    console.log("  ! Analyse achat :", e.message);
+    await maj({ statut: "erreur", erreur: "L'assistant n'a pas réussi : " + e.message });
+  }
+}
+const nombreSur = (v) => { const n = parseFloat(String(v == null ? "" : v).replace(",", ".")); return isNaN(n) ? 0 : Math.round(n * 100) / 100; };
+
+let achatsEnCours = 0;
+async function traiterAchats() {
+  if (!tableAchatsOK || verrouPose(achatsEnCours) || !CLE_IA) return;
+  achatsEnCours = Date.now();
+  try {
+    const { data } = await supabase.from("achats").select("*")
+      .eq("donnees->>statut", "a_analyser").limit(5);
+    for (const row of data || []) await analyserAchat(row);
+  } catch (e) {
+    console.log("  ! Achats :", e.message);
+  } finally {
+    achatsEnCours = 0;
+  }
+}
+
 /* ---------- Publication Instagram (v9) ----------
    Le bouton « Publier sur Instagram » de la page Reseaux passe le post en
    statut 'a_publier' ; ici on l'envoie vraiment : conteneur puis publication
@@ -1090,7 +1597,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v9.3 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v9.4 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
@@ -1117,6 +1624,7 @@ async function cycle() {
   setInterval(traiterEnvoisMails, 30000);
   setInterval(traiterPostsReseaux, 30000);
   setInterval(traiterPublications, 45000);
+  setInterval(traiterAchats, 40000);
   console.log(JETON_IG_ENV
     ? "Publication Instagram active (compte @domainedelacourdeslys)."
     : "Publication Instagram en veille (INSTAGRAM_TOKEN absent).");
