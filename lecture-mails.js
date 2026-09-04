@@ -1,6 +1,10 @@
 
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v9.7  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v9.8  ·  LECTURE SEULE (IMAP)
+   (v9.8 : COMPTA AUTOMATIQUE — toute piece jointe PDF/image d'un mail classe
+    Compta part toute seule en analyse d'achat (id ac_mail_<uid>_<n>, source
+    mail_auto) ; l'assistant repond "estUneFacture" et ECARTE de lui-meme les
+    releves, contrats, RIB et publicites. Plus aucun clic pour les factures mail.)
    (v9.7 : VENTILATION SUR UNE SEULE LIGNE — un ticket qui melange plusieurs
     categories reste UN ticket : les parts par categorie sont rangees dans
     donnees.ventilation (sous-lignes depliables dans CDL), les totaux de la
@@ -1172,6 +1176,9 @@ Reponds UNIQUEMENT avec un objet JSON, sans commentaire :
  "categorie":"une SEULE parmi : ${CATEGORIES_ACHAT.join(" | ")}",
  "moyen":"CB, Especes, Cheque, Virement, Prelevement ou vide si illisible",
  "description":"en quelques mots ce qui a ete achete"}
+Ajoute "estUneFacture": true ou false — false si le document n'est PAS une piece
+d'achat (releve bancaire, contrat, RIB, publicite, devis, confirmation de commande
+sans facturation, attestation...).
 Regles : n'invente RIEN — si un montant est illisible mets 0 ; si HT absent mais
 TTC et taux lisibles, calcule-le ; la date au format AAAA-MM-JJ.
 Si le ticket melange NETTEMENT plusieurs categories (ex. courses alimentaires +
@@ -1184,6 +1191,17 @@ sinon, omets "ventilation".`;
       text: "Voici la piece a lire." + (don.indices ? `\nIndices donnes par l'equipe (a verifier sur la piece, la piece fait foi) : ${don.indices}` : ""),
     }], 700);
     const objet = JSON.parse(texte.slice(texte.indexOf("{"), texte.lastIndexOf("}") + 1));
+    /* v9.8 : pas une facture ? Une piece arrivee toute seule (mail_auto) est
+       ecartee sans bruit ; une piece deposee par l'equipe est signalee. */
+    if (objet.estUneFacture === false) {
+      if (don.source === "mail_auto") {
+        await supabase.from("achats").delete().eq("id", row.id);
+        console.log(`  Piece ecartee (pas une facture) : ${don.nomFichier || row.id}.`);
+        return;
+      }
+      await maj({ statut: "erreur", erreur: `Ce document ne ressemble pas à une facture (${String(objet.description || "").slice(0, 60) || "type inconnu"}) — vérifiez la pièce.` });
+      return;
+    }
     const commun = {
       fournisseur: String(objet.fournisseur || ""), date: String(objet.date || "").slice(0, 10),
       tauxTva: nombreSur(objet.tauxTva), moyen: String(objet.moyen || ""),
@@ -1675,6 +1693,27 @@ async function cycle() {
         console.log(`  + [${categorie}${dossier ? " / " + dossier : ""}] ${mail.expediteur || mail.expediteur_email} — ${mail.objet}`);
       }
 
+      /* v9.8 : une piece jointe PDF/image d'un mail COMPTA part toute seule en
+         analyse d'achat ; l'assistant ecartera de lui-meme ce qui n'est pas une
+         facture (releve, contrat, pub). Id deterministe = pas de doublon. */
+      if (!error && categorie === "compta" && tableAchatsOK) {
+        for (let pi = 0; pi < pieces.length; pi++) {
+          const p = pieces[pi];
+          if (!p.chemin || !/pdf|image|jpe?g|png/i.test((p.type || "") + " " + (p.nom || ""))) continue;
+          const idA = `ac_mail_${msg.uid}_${pi}`;
+          const { error: eA } = await supabase.from("achats").insert({
+            id: idA, modifie_le: new Date().toISOString(),
+            donnees: {
+              id: idA, statut: "a_analyser", chemin: p.chemin, typeMime: p.type || "",
+              nomFichier: p.nom || "", source: "mail_auto",
+              creeLe: new Date().toISOString().slice(0, 10),
+              indices: `recu par mail de ${mail.expediteur || mail.expediteur_email || "?"} — objet « ${mail.objet || "" } »`,
+            },
+          });
+          if (!eA) console.log(`  🧾 PJ « ${p.nom} » envoyee en compta (analyse automatique).`);
+        }
+      }
+
       if (msg.uid > dernierUid) dernierUid = msg.uid;
     }
 
@@ -1696,7 +1735,7 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v9.7 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v9.8 (LECTURE SEULE cote IMAP) demarre.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
