@@ -1,6 +1,11 @@
 
 /* ============================================================
-   CDL — Lecteur de boite mail  ·  v9.8  ·  LECTURE SEULE (IMAP)
+   CDL — Lecteur de boite mail  ·  v9.9  ·  LECTURE SEULE (IMAP)
+   (v9.9 : RETOUCHE PHOTO PAR RESEAU — au moment de la redaction, la photo du
+    post est corrigee selon le reseau vise (Instagram : Signature CDL +4 %
+    lumiere +10 % couleurs ; LinkedIn : sobre ; Google : lumineux). L'originale
+    de la phototheque est conservee ; changer le reseau refait la retouche.
+    Necessite la dependance 'sharp' dans package.json.)
    (v9.8 : COMPTA AUTOMATIQUE — toute piece jointe PDF/image d'un mail classe
     Compta part toute seule en analyse d'achat (id ac_mail_<uid>_<n>, source
     mail_auto) ; l'assistant repond "estUneFacture" et ECARTE de lui-meme les
@@ -1078,9 +1083,50 @@ reponds UNIQUEMENT avec le texte du post, sans commentaire autour.`;
 const urlPhotoReseau = (chemin) =>
   `${process.env.SUPABASE_URL}/storage/v1/object/public/reseaux/${encodeURIComponent(chemin)}`;
 
+/* v9.9 : RETOUCHE PAR RESEAU — avant de rediger, l'assistant corrige la photo
+   selon le reseau vise (preset maison valide sur le feed : lumiere doree,
+   pierres blondes). L'originale de la phototheque n'est jamais touchee :
+   la version corrigee vit a cote (retouche-<reseau>-...) et c'est elle qui
+   est decrite, affichee et publiee. Sans la dependance 'sharp', on passe. */
+let sharp = null;
+try { sharp = require("sharp"); } catch (e) { /* package.json pas encore a jour */ }
+const PRESETS_RETOUCHE = {
+  instagram: { brightness: 1.04, saturation: 1.10 }, /* Signature CDL validee */
+  linkedin: { brightness: 1.05, saturation: 1.03 },  /* sobre et net, monde pro */
+  google: { brightness: 1.06, saturation: 1.12 },    /* vignette lumineuse fiche locale */
+};
+
+async function retoucherPhotoPost(don) {
+  if (!sharp || !don.chemin || don.photoRetouchee) return null;
+  try {
+    const { data: fichier, error } = await supabase.storage.from("reseaux").download(don.chemin);
+    if (error || !fichier) return null;
+    const p = PRESETS_RETOUCHE[don.reseau] || PRESETS_RETOUCHE.instagram;
+    const tampon = Buffer.from(await fichier.arrayBuffer());
+    const sortie = await sharp(tampon)
+      .modulate({ brightness: p.brightness, saturation: p.saturation })
+      .jpeg({ quality: 88 })
+      .toBuffer();
+    const chemin2 = `retouche-${don.reseau || "instagram"}-${don.chemin.replace(/^retouche-[a-z]+-/, "")}`;
+    const up = await supabase.storage.from("reseaux").upload(chemin2, sortie, { contentType: "image/jpeg", upsert: true });
+    if (up.error) return null;
+    return chemin2;
+  } catch (e) {
+    console.log("  ! Retouche photo :", e.message);
+    return null;
+  }
+}
+
 async function redigerPost(row) {
   const don = row.donnees || {};
   try {
+    const cheminRetouche = await retoucherPhotoPost(don);
+    if (cheminRetouche) {
+      don.cheminOriginal = don.cheminOriginal || don.chemin;
+      don.chemin = cheminRetouche;
+      don.photoRetouchee = true;
+      console.log(`Photo corrigee pour ${don.reseau || "instagram"} (${row.id}).`);
+    }
     const message = `Reseau : ${don.reseau || "instagram"}
 Date de publication prevue : ${don.date || "(libre)"}
 Consigne de l'equipe : ${don.consigne || "(aucune — texte au gout de la maison)"}
@@ -1735,7 +1781,10 @@ async function cycle() {
 
 /* ---------- Boucle ---------- */
 (async () => {
-  console.log("CDL — Lecteur de boite mail v9.8 (LECTURE SEULE cote IMAP) demarre.");
+  console.log("CDL — Lecteur de boite mail v9.9 (LECTURE SEULE cote IMAP) demarre.");
+console.log(sharp
+  ? "Retouche photo par reseau : active (sharp present)."
+  : "Retouche photo par reseau : EN VEILLE — ajouter 'sharp' dans package.json puis redeployer.");
   console.log(`Boite : ${process.env.MAIL_UTILISATEUR} · Serveur : ${process.env.IMAP_HOST}`);
   console.log(`Verification toutes les ${FREQ / 60000} minute(s) · reponses et demandes de devis relevees toutes les 30 s.`);
   console.log(CLE_IA
